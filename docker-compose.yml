@@ -1,0 +1,44 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: trustline-postgres
+    environment:
+      POSTGRES_USER: trustline
+      POSTGRES_PASSWORD: trustline_dev
+      POSTGRES_DB: trustline
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trustline -d trustline"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - trustline-net
+
+  nats:
+    image: nats:2-alpine
+    container_name: trustline-nats
+    command: ["--jetstream", "--store_dir", "/data"]
+    ports:
+      - "4222:4222"   # Client connections
+      - "8222:8222"   # HTTP monitoring
+    volumes:
+      - natsdata:/data
+    healthcheck:
+      test: ["CMD", "nats-server", "--signal", "ldm"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - trustline-net
+
+volumes:
+  pgdata:
+  natsdata:
+
+networks:
+  trustline-net:
+    driver: bridge

@@ -1,0 +1,74 @@
+version: "3.8"
+
+services:
+  traefik:
+    image: traefik:v2.10
+    container_name: trustline-traefik
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      # Automatic Let's Encrypt TLS
+      - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
+      - "--certificatesresolvers.myresolver.acme.email=admin@encryptedchat.in"
+      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080" # Traefik dashboard
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "letsencrypt:/letsencrypt"
+    networks:
+      - trustline-net
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trustline-backend
+    restart: always
+    environment:
+      - RUST_LOG=info
+      - DATABASE_URL=postgres://trustline:trustline_prod_secret_123@postgres:5432/trustline
+      - JWT_SECRET=change_me_to_a_secure_random_string_in_production
+    depends_on:
+      postgres:
+        condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=Host(`api.encryptedchat.in`)"
+      - "traefik.http.routers.backend.entrypoints=websecure"
+      - "traefik.http.routers.backend.tls.certresolver=myresolver"
+      # Allow WebSocket upgrades automatically
+      - "traefik.http.services.backend.loadbalancer.server.port=3000"
+    networks:
+      - trustline-net
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: trustline-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: trustline
+      POSTGRES_PASSWORD: trustline_prod_secret_123
+      POSTGRES_DB: trustline
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trustline -d trustline"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - trustline-net
+
+volumes:
+  pgdata:
+  letsencrypt:
+
+networks:
+  trustline-net:
+    driver: bridge
