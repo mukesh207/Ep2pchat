@@ -1,5 +1,6 @@
 use axum::{
     extract::State,
+    http::StatusCode,
     routing::get,
     Json, Router,
 };
@@ -8,6 +9,7 @@ use serde_json::{json, Value};
 use sqlx::Row;
 use uuid::Uuid;
 use crate::AppState;
+use crate::auth::AuthContext;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -22,11 +24,12 @@ pub struct UserInfo {
 
 pub async fn get_users(
     State(state): State<AppState>,
-) -> Json<Value> {
-    // In a real app, we'd filter by org_id from the user's token
+    auth: AuthContext,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let records = sqlx::query(
-        "SELECT id, email FROM users WHERE status = 'active'"
+        "SELECT id, email FROM users WHERE status = 'active' AND org_id = $1"
     )
+    .bind(auth.claims.org_id)
     .fetch_all(&state.db)
     .await;
 
@@ -39,8 +42,8 @@ pub async fn get_users(
                     email: row.get("email"),
                 });
             }
-            Json(json!({"users": users}))
+            Ok(Json(json!({"users": users})))
         }
-        Err(e) => Json(json!({"error": e.to_string()})),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()})))),
     }
 }

@@ -1,5 +1,6 @@
 use axum::{
     extract::{Path, State},
+    http::StatusCode,
     routing::{get, post},
     Json, Router,
 };
@@ -9,6 +10,7 @@ use sqlx::{Row, PgPool};
 use uuid::Uuid;
 use base64::Engine;
 use crate::AppState;
+use crate::auth::AuthContext;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -35,24 +37,29 @@ pub struct UploadKeysPayload {
 
 pub async fn upload_keys(
     State(state): State<AppState>,
+    auth: AuthContext,
     Json(payload): Json<UploadKeysPayload>,
-) -> Json<Value> {
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if auth.claims.sub != payload.user_id || auth.claims.org_id != payload.org_id {
+        return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden: Cannot upload keys for another user"}))));
+    }
+
     let mut tx = match state.db.begin().await {
         Ok(tx) => tx,
-        Err(e) => return Json(json!({"error": format!("DB Error: {}", e)})),
+        Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("DB Error: {}", e)})))),
     };
 
     let ik = match base64::engine::general_purpose::STANDARD.decode(&payload.identity_key) {
         Ok(k) => k,
-        Err(_) => return Json(json!({"error": "Invalid base64 for identity_key"})),
+        Err(_) => return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "Invalid base64 for identity_key"})))),
     };
     let spk = match base64::engine::general_purpose::STANDARD.decode(&payload.signed_pre_key) {
         Ok(k) => k,
-        Err(_) => return Json(json!({"error": "Invalid base64 for signed_pre_key"})),
+        Err(_) => return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "Invalid base64 for signed_pre_key"})))),
     };
     let spk_sig = match base64::engine::general_purpose::STANDARD.decode(&payload.signed_pre_key_sig) {
         Ok(k) => k,
-        Err(_) => return Json(json!({"error": "Invalid base64 for signed_pre_key_sig"})),
+        Err(_) => return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "Invalid base64 for signed_pre_key_sig"})))),
     };
 
     let device_row = sqlx::query(
@@ -70,13 +77,13 @@ pub async fn upload_keys(
 
     let device_id: Uuid = match device_row {
         Ok(row) => row.get("id"),
-        Err(e) => return Json(json!({"error": format!("Failed to insert device: {}", e)})),
+        Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Failed to insert device: {}", e)})))),
     };
 
     for opk in payload.one_time_pre_keys {
         let opk_bytes = match base64::engine::general_purpose::STANDARD.decode(&opk.public_key) {
             Ok(k) => k,
-            Err(_) => return Json(json!({"error": format!("Invalid base64 for OPK {}", opk.key_id)})),
+            Err(_) => return Err((StatusCode::BAD_REQUEST, Json(json!({"error": format!("Invalid base64 for OPK {}", opk.key_id)})))),
         };
 
         if let Err(e) = sqlx::query(
@@ -88,15 +95,15 @@ pub async fn upload_keys(
         .bind(opk_bytes)
         .execute(&mut *tx)
         .await {
-            return Json(json!({"error": format!("Failed to insert OPK {}: {}", opk.key_id, e)}));
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Failed to insert OPK {}: {}", opk.key_id, e)}))));
         }
     }
 
     if let Err(e) = tx.commit().await {
-        return Json(json!({"error": format!("Failed to commit tx: {}", e)}));
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Failed to commit tx: {}", e)}))));
     }
 
-    Json(json!({"status": "success", "device_id": device_id}))
+    Ok(Json(json!({"status": "success", "device_id": device_id})))
 }
 
 #[derive(Serialize, Clone)]
@@ -111,11 +118,29 @@ pub struct DeviceBundle {
 
 pub async fn get_user_keys_handler(
     State(state): State<AppState>,
+    auth: AuthContext,
     Path(user_id): Path<Uuid>,
-) -> Json<Value> {
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    // Only allow users from the same organization to fetch keys
+    let org_id_check = sqlx::query("SELECT org_id FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await;
+
+    match org_id_check {
+        Ok(Some(row)) => {
+            let target_org_id: Uuid = row.get("org_id");
+            if target_org_id != auth.claims.org_id {
+                return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Cross-tenant key request denied"}))));
+            }
+        },
+        Ok(None) => return Err((StatusCode::NOT_FOUND, Json(json!({"error": "User not found"})))),
+        Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()})))),
+    }
+
     match get_user_keys_internal(&state.db, user_id).await {
-        Ok(bundles) => Json(json!({ "user_id": user_id, "devices": bundles })),
-        Err(e) => Json(json!({"error": e})),
+        Ok(bundles) => Ok(Json(json!({ "user_id": user_id, "devices": bundles }))),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e})))),
     }
 }
 

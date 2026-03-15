@@ -1,9 +1,10 @@
 use axum::{
-    extract::State,
+    extract::{FromRequestParts, State},
+    http::{request::Parts, StatusCode},
     routing::post,
     Json, Router,
 };
-use jsonwebtoken::{encode, EncodingKey, Header};
+use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::Row;
@@ -11,11 +12,46 @@ use uuid::Uuid;
 use webauthn_rs::prelude::*;
 use crate::AppState;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
     pub sub: Uuid,
     pub org_id: Uuid,
+    pub is_admin: bool,
     pub exp: usize,
+}
+
+pub struct AuthContext {
+    pub claims: Claims,
+}
+
+impl<S> FromRequestParts<S> for AuthContext
+where
+    S: Send + Sync,
+{
+    type Rejection = (StatusCode, Json<Value>);
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let auth_header = parts.headers.get("Authorization").and_then(|h| h.to_str().ok());
+        if let Some(auth_header) = auth_header {
+            if let Some(token) = auth_header.strip_prefix("Bearer ") {
+                let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "super_secret_fallback_key_for_dev".to_string());
+                let validation = Validation::default();
+                // Depending on jsonwebtoken version, we might not need to mutate validation here.
+                let token_data = decode::<Claims>(
+                    token,
+                    &DecodingKey::from_secret(jwt_secret.as_bytes()),
+                    &validation,
+                );
+                if let Ok(data) = token_data {
+                    return Ok(AuthContext { claims: data.claims });
+                }
+            }
+        }
+        Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Unauthorized"})),
+        ))
+    }
 }
 
 pub fn router() -> Router<AppState> {
@@ -30,13 +66,6 @@ pub fn router() -> Router<AppState> {
 #[derive(Deserialize)]
 pub struct RequestAccessPayload {
     pub email: String,
-}
-
-#[derive(Serialize)]
-pub struct RequestAccessResponse {
-    pub status: String,
-    pub message: String,
-    pub user_id: Option<Uuid>,
 }
 
 pub async fn request_access(
@@ -346,9 +375,21 @@ pub async fn login_complete(
         .expect("valid timestamp")
         .timestamp() as usize;
 
+    let user_record = match sqlx::query("SELECT is_admin FROM users WHERE id = $1")
+        .bind(payload.user_id)
+        .fetch_optional(&state.db)
+        .await
+    {
+        Ok(Some(r)) => r,
+        Ok(None) => return Json(json!({"error": "User not found"})),
+        Err(e) => return Json(json!({"error": format!("DB Error: {}", e)})),
+    };
+    let is_admin: bool = user_record.get::<Option<bool>, _>("is_admin").unwrap_or(false);
+
     let claims = Claims {
         sub: payload.user_id,
         org_id,
+        is_admin,
         exp: expiration,
     };
 

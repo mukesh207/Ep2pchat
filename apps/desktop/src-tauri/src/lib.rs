@@ -3,6 +3,7 @@ use sodiumoxide::crypto::sign::ed25519::gen_keypair as gen_sign_keypair;
 use sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::{PublicKey, SecretKey};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -62,7 +63,7 @@ pub struct EncryptedPayload {
 
 #[tauri::command]
 fn alice_handshake_and_encrypt(
-    alice_ik_sk: String,
+    mut alice_ik_sk: String,
     bob_ik_pk: String,
     bob_spk_pk: String,
     bob_opk_pk: Option<String>,
@@ -70,7 +71,13 @@ fn alice_handshake_and_encrypt(
 ) -> Result<(String, EncryptedPayload), String> {
     init().map_err(|_| "Failed to initialize crypto".to_string())?;
 
-    let aik_sk = SecretKey::from_slice(&STANDARD.decode(alice_ik_sk).map_err(|e| e.to_string())?).unwrap();
+    let mut decoded_aik_sk = STANDARD.decode(&alice_ik_sk).map_err(|e| e.to_string())?;
+    let aik_sk = SecretKey::from_slice(&decoded_aik_sk).unwrap();
+    
+    // Explicitly zeroize private key material from memory
+    alice_ik_sk.zeroize();
+    decoded_aik_sk.zeroize();
+
     let bik_pk = PublicKey::from_slice(&STANDARD.decode(bob_ik_pk).map_err(|e| e.to_string())?).unwrap();
     let bspk_pk = PublicKey::from_slice(&STANDARD.decode(bob_spk_pk).map_err(|e| e.to_string())?).unwrap();
     let bopk_pk = if let Some(pk) = bob_opk_pk {
@@ -102,9 +109,9 @@ fn alice_handshake_and_encrypt(
 
 #[tauri::command]
 fn bob_handshake_and_decrypt(
-    bob_ik_sk: String,
-    bob_spk_sk: String,
-    bob_opk_sk: Option<String>,
+    mut bob_ik_sk: String,
+    mut bob_spk_sk: String,
+    mut bob_opk_sk: Option<String>,
     alice_ik_pk: String,
     alice_ek_pk: String,
     ciphertext: String,
@@ -112,13 +119,26 @@ fn bob_handshake_and_decrypt(
 ) -> Result<String, String> {
     init().map_err(|_| "Failed to initialize crypto".to_string())?;
 
-    let bik_sk = SecretKey::from_slice(&STANDARD.decode(bob_ik_sk).map_err(|e| e.to_string())?).unwrap();
-    let bspk_sk = SecretKey::from_slice(&STANDARD.decode(bob_spk_sk).map_err(|e| e.to_string())?).unwrap();
-    let bopk_sk = if let Some(sk) = bob_opk_sk {
-        Some(SecretKey::from_slice(&STANDARD.decode(sk).map_err(|e| e.to_string())?).unwrap())
+    let mut decoded_bik_sk = STANDARD.decode(&bob_ik_sk).map_err(|e| e.to_string())?;
+    let bik_sk = SecretKey::from_slice(&decoded_bik_sk).unwrap();
+    bob_ik_sk.zeroize();
+    decoded_bik_sk.zeroize();
+
+    let mut decoded_bspk_sk = STANDARD.decode(&bob_spk_sk).map_err(|e| e.to_string())?;
+    let bspk_sk = SecretKey::from_slice(&decoded_bspk_sk).unwrap();
+    bob_spk_sk.zeroize();
+    decoded_bspk_sk.zeroize();
+
+    let bopk_sk = if let Some(ref mut sk_str) = bob_opk_sk {
+        let mut decoded_bopk_sk = STANDARD.decode(&sk_str).map_err(|e| e.to_string())?;
+        let sk = SecretKey::from_slice(&decoded_bopk_sk).unwrap();
+        sk_str.zeroize();
+        decoded_bopk_sk.zeroize();
+        Some(sk)
     } else {
         None
     };
+
     let aik_pk = PublicKey::from_slice(&STANDARD.decode(alice_ik_pk).map_err(|e| e.to_string())?).unwrap();
     let aek_pk = PublicKey::from_slice(&STANDARD.decode(alice_ek_pk).map_err(|e| e.to_string())?).unwrap();
 

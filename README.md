@@ -60,14 +60,8 @@ npm run tauri dev
 
 To deploy the full production stack with automated TLS (via Traefik and Let's Encrypt):
 
-1.  Update `docker-compose.production.yml` with your production secrets.
-2.  Run:
-```bash
-docker compose -f docker-compose.production.yml up -d --build
-```
-
 ## 📅 Project Roadmap
-Detailed progress is tracked in [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md).
+Detailed progress is tracked in our elite [Implementation Plan](/home/st4rk/.gemini/antigravity/brain/a0da5252-5180-4d06-b27f-127f6d10cf50/implementation_plan.md).
 
 ---
 **Secure Communication for the Modern Enterprise.**  
