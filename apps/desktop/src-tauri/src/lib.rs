@@ -1,13 +1,86 @@
-use crypto_core::{init, generate_identity_keypair, generate_signed_pre_key, generate_one_time_pre_keys, x3dh_sender, x3dh_receiver, encrypt_message, decrypt_message};
-use sodiumoxide::crypto::sign::ed25519::gen_keypair as gen_sign_keypair;
-use sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::{PublicKey, SecretKey};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use crypto_core::{
+    decrypt_message, encrypt_message, generate_identity_keypair, generate_one_time_pre_keys,
+    generate_otpk_batch, generate_signed_pre_key, init, x3dh_receiver, x3dh_sender, MessageHeader,
+    RatchetSession,
+};
+
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::{PublicKey, SecretKey};
+use sodiumoxide::crypto::sign::ed25519::gen_keypair as gen_sign_keypair;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
+use tauri::Manager;
 use zeroize::Zeroize;
+
+mod vault_key;
+use vault_key::{get_or_create_vault_key, verify_vault_key_accessible};
+
+#[derive(Default)]
+struct SessionState {
+    jwt: Arc<RwLock<Option<String>>>,
+}
+
+#[tauri::command]
+fn clear_vault_session(session: tauri::State<'_, SessionState>) -> Result<(), String> {
+    let mut guard = session
+        .jwt
+        .write()
+        .map_err(|_| "session state lock poisoned".to_string())?;
+    *guard = None;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_session_jwt(session: tauri::State<'_, SessionState>, jwt: String) -> Result<(), String> {
+    let mut guard = session
+        .jwt
+        .write()
+        .map_err(|_| "session state lock poisoned".to_string())?;
+    *guard = Some(jwt);
+    Ok(())
+}
 
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
+}
+
+#[tauri::command]
+fn get_or_create_vault_secret(app_handle: tauri::AppHandle) -> Result<String, String> {
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data dir: {}", e))?;
+
+    if !app_data_dir.exists() {
+        fs::create_dir_all(&app_data_dir)
+            .map_err(|e| format!("Failed to create app data dir: {}", e))?;
+    }
+
+    let secret_path: PathBuf = app_data_dir.join("vault-secret.bin");
+    if secret_path.exists() {
+        let existing =
+            fs::read(&secret_path).map_err(|e| format!("Failed to read vault secret: {}", e))?;
+        if existing.len() == 32 {
+            return Ok(STANDARD.encode(existing));
+        }
+    }
+
+    let mut secret = [0u8; 32];
+    rand::rng().fill_bytes(&mut secret);
+    fs::write(&secret_path, secret)
+        .map_err(|e| format!("Failed to persist vault secret: {}", e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&secret_path, fs::Permissions::from_mode(0o600));
+    }
+
+    Ok(STANDARD.encode(secret))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -32,7 +105,7 @@ fn generate_keys() -> Result<KeyBundleResponse, String> {
     init().map_err(|_| "Failed to initialize crypto".to_string())?;
 
     let (ik_pk, ik_sk) = generate_identity_keypair();
-    let (_sign_pk, sign_sk) = gen_sign_keypair(); 
+    let (_sign_pk, sign_sk) = gen_sign_keypair();
     let (spk_pk, spk_sk, spk_sig) = generate_signed_pre_key(&sign_sk);
     let opks = generate_one_time_pre_keys(50);
 
@@ -71,30 +144,36 @@ fn alice_handshake_and_encrypt(
 ) -> Result<(String, EncryptedPayload), String> {
     init().map_err(|_| "Failed to initialize crypto".to_string())?;
 
+    // SECURITY: caller-controlled input
     let mut decoded_aik_sk = STANDARD.decode(&alice_ik_sk).map_err(|e| e.to_string())?;
-    let aik_sk = SecretKey::from_slice(&decoded_aik_sk).unwrap();
-    
+    // SECURITY: caller-controlled input
+    let aik_sk =
+        SecretKey::from_slice(&decoded_aik_sk).ok_or("invalid input: alice_ik_sk length")?;
+
     // Explicitly zeroize private key material from memory
     alice_ik_sk.zeroize();
     decoded_aik_sk.zeroize();
 
-    let bik_pk = PublicKey::from_slice(&STANDARD.decode(bob_ik_pk).map_err(|e| e.to_string())?).unwrap();
-    let bspk_pk = PublicKey::from_slice(&STANDARD.decode(bob_spk_pk).map_err(|e| e.to_string())?).unwrap();
+    // SECURITY: caller-controlled input
+    let bik_pk = PublicKey::from_slice(&STANDARD.decode(bob_ik_pk).map_err(|e| e.to_string())?)
+        .ok_or("invalid input: bob_ik_pk length")?;
+    // SECURITY: caller-controlled input
+    let bspk_pk =
+        PublicKey::from_slice(&STANDARD.decode(bob_spk_pk).map_err(|e| e.to_string())?)
+            .ok_or("invalid input: bob_spk_pk length")?;
     let bopk_pk = if let Some(pk) = bob_opk_pk {
-        Some(PublicKey::from_slice(&STANDARD.decode(pk).map_err(|e| e.to_string())?).unwrap())
+        // SECURITY: caller-controlled input
+        Some(
+            PublicKey::from_slice(&STANDARD.decode(pk).map_err(|e| e.to_string())?)
+                .ok_or("invalid input: bob_opk_pk length")?,
+        )
     } else {
         None
     };
 
     let (aek_pk, aek_sk) = generate_identity_keypair();
 
-    let shared_secret = x3dh_sender(
-        &aik_sk,
-        &aek_sk,
-        &bik_pk,
-        &bspk_pk,
-        bopk_pk.as_ref(),
-    );
+    let shared_secret = x3dh_sender(&aik_sk, &aek_sk, &bik_pk, &bspk_pk, bopk_pk.as_ref());
 
     let (ciphertext, nonce) = encrypt_message(message.as_bytes(), &shared_secret);
 
@@ -103,8 +182,94 @@ fn alice_handshake_and_encrypt(
         EncryptedPayload {
             ciphertext: STANDARD.encode(ciphertext),
             nonce: STANDARD.encode(nonce),
-        }
+        },
     ))
+}
+
+/// Perform the X3DH handshake as Alice (sender) **without** encrypting.
+/// Returns `{ shared_secret_b64, ephemeral_pk_b64 }` so the caller can
+/// initialise a Double Ratchet session with `ratchet_init_sender`, then
+/// encrypt with `ratchet_encrypt`.
+#[tauri::command]
+fn alice_x3dh(
+    mut alice_ik_sk: String,
+    bob_ik_pk: String,
+    bob_spk_pk: String,
+    bob_opk_pk: Option<String>,
+) -> Result<serde_json::Value, String> {
+    init().map_err(|_| "Failed to initialize crypto".to_string())?;
+
+    let mut decoded = STANDARD.decode(&alice_ik_sk).map_err(|e| e.to_string())?;
+    let aik_sk = SecretKey::from_slice(&decoded).ok_or("invalid alice IK length")?;
+    alice_ik_sk.zeroize();
+    decoded.zeroize();
+
+    let bik_pk = PublicKey::from_slice(&STANDARD.decode(&bob_ik_pk).map_err(|e| e.to_string())?)
+        .ok_or("invalid bob IK")?;
+    let bspk_pk = PublicKey::from_slice(&STANDARD.decode(&bob_spk_pk).map_err(|e| e.to_string())?)
+        .ok_or("invalid bob SPK")?;
+    let bopk_pk = bob_opk_pk
+        .map(|pk| {
+            STANDARD
+                .decode(&pk)
+                .map_err(|e| e.to_string())
+                .and_then(|b| PublicKey::from_slice(&b).ok_or_else(|| "invalid OPK".to_string()))
+        })
+        .transpose()?;
+
+    let (aek_pk, aek_sk) = generate_identity_keypair();
+    let mut secret = x3dh_sender(&aik_sk, &aek_sk, &bik_pk, &bspk_pk, bopk_pk.as_ref());
+
+    let out = serde_json::json!({
+        "shared_secret_b64": STANDARD.encode(&secret),
+        "ephemeral_pk_b64":  STANDARD.encode(aek_pk.as_ref()),
+    });
+    secret.zeroize();
+    Ok(out)
+}
+
+/// Perform the X3DH handshake as Bob (receiver) **without** decrypting.
+/// Returns the shared secret as base64 so the caller can initialise a
+/// Double Ratchet session with `ratchet_init_receiver`, then decrypt
+/// with `ratchet_decrypt`.
+#[tauri::command]
+fn bob_x3dh(
+    mut bob_ik_sk: String,
+    mut bob_spk_sk: String,
+    bob_opk_sk: Option<String>,
+    alice_ik_pk: String,
+    alice_ek_pk: String,
+) -> Result<String, String> {
+    init().map_err(|_| "Failed to initialize crypto".to_string())?;
+
+    let mut dbik = STANDARD.decode(&bob_ik_sk).map_err(|e| e.to_string())?;
+    let bik_sk = SecretKey::from_slice(&dbik).ok_or("invalid bob IK")?;
+    bob_ik_sk.zeroize();
+    dbik.zeroize();
+
+    let mut dbspk = STANDARD.decode(&bob_spk_sk).map_err(|e| e.to_string())?;
+    let bspk_sk = SecretKey::from_slice(&dbspk).ok_or("invalid bob SPK")?;
+    bob_spk_sk.zeroize();
+    dbspk.zeroize();
+
+    let bopk_sk = bob_opk_sk
+        .map(|sk| {
+            STANDARD
+                .decode(&sk)
+                .map_err(|e| e.to_string())
+                .and_then(|b| SecretKey::from_slice(&b).ok_or_else(|| "invalid OPK SK".to_string()))
+        })
+        .transpose()?;
+
+    let aik_pk = PublicKey::from_slice(&STANDARD.decode(&alice_ik_pk).map_err(|e| e.to_string())?)
+        .ok_or("invalid alice IK")?;
+    let aek_pk = PublicKey::from_slice(&STANDARD.decode(&alice_ek_pk).map_err(|e| e.to_string())?)
+        .ok_or("invalid alice EK")?;
+
+    let mut secret = x3dh_receiver(&bik_sk, &bspk_sk, bopk_sk.as_ref(), &aik_pk, &aek_pk);
+    let out = STANDARD.encode(&secret);
+    secret.zeroize();
+    Ok(out)
 }
 
 #[tauri::command]
@@ -119,19 +284,28 @@ fn bob_handshake_and_decrypt(
 ) -> Result<String, String> {
     init().map_err(|_| "Failed to initialize crypto".to_string())?;
 
+    // SECURITY: caller-controlled input
     let mut decoded_bik_sk = STANDARD.decode(&bob_ik_sk).map_err(|e| e.to_string())?;
-    let bik_sk = SecretKey::from_slice(&decoded_bik_sk).unwrap();
+    // SECURITY: caller-controlled input
+    let bik_sk =
+        SecretKey::from_slice(&decoded_bik_sk).ok_or("invalid input: bob_ik_sk length")?;
     bob_ik_sk.zeroize();
     decoded_bik_sk.zeroize();
 
+    // SECURITY: caller-controlled input
     let mut decoded_bspk_sk = STANDARD.decode(&bob_spk_sk).map_err(|e| e.to_string())?;
-    let bspk_sk = SecretKey::from_slice(&decoded_bspk_sk).unwrap();
+    // SECURITY: caller-controlled input
+    let bspk_sk =
+        SecretKey::from_slice(&decoded_bspk_sk).ok_or("invalid input: bob_spk_sk length")?;
     bob_spk_sk.zeroize();
     decoded_bspk_sk.zeroize();
 
     let bopk_sk = if let Some(ref mut sk_str) = bob_opk_sk {
+        // SECURITY: caller-controlled input
         let mut decoded_bopk_sk = STANDARD.decode(&sk_str).map_err(|e| e.to_string())?;
-        let sk = SecretKey::from_slice(&decoded_bopk_sk).unwrap();
+        // SECURITY: caller-controlled input
+        let sk =
+            SecretKey::from_slice(&decoded_bopk_sk).ok_or("invalid input: bob_opk_sk length")?;
         sk_str.zeroize();
         decoded_bopk_sk.zeroize();
         Some(sk)
@@ -139,35 +313,316 @@ fn bob_handshake_and_decrypt(
         None
     };
 
-    let aik_pk = PublicKey::from_slice(&STANDARD.decode(alice_ik_pk).map_err(|e| e.to_string())?).unwrap();
-    let aek_pk = PublicKey::from_slice(&STANDARD.decode(alice_ek_pk).map_err(|e| e.to_string())?).unwrap();
+    // SECURITY: caller-controlled input
+    let aik_pk = PublicKey::from_slice(&STANDARD.decode(alice_ik_pk).map_err(|e| e.to_string())?)
+        .ok_or("invalid input: alice_ik_pk length")?;
+    // SECURITY: caller-controlled input
+    let aek_pk = PublicKey::from_slice(&STANDARD.decode(alice_ek_pk).map_err(|e| e.to_string())?)
+        .ok_or("invalid input: alice_ek_pk length")?;
 
-    let shared_secret = x3dh_receiver(
-        &bik_sk,
-        &bspk_sk,
-        bopk_sk.as_ref(),
-        &aik_pk,
-        &aek_pk,
-    );
+    let shared_secret = x3dh_receiver(&bik_sk, &bspk_sk, bopk_sk.as_ref(), &aik_pk, &aek_pk);
 
     let ciphertext_bytes = STANDARD.decode(ciphertext).map_err(|e| e.to_string())?;
     let nonce_bytes = STANDARD.decode(nonce).map_err(|e| e.to_string())?;
 
-    let decrypted = decrypt_message(&ciphertext_bytes, &shared_secret, &nonce_bytes).map_err(|_| "Decryption failed".to_string())?;
+    let decrypted = decrypt_message(&ciphertext_bytes, &shared_secret, &nonce_bytes)
+        .map_err(|_| "Decryption failed".to_string())?;
 
     String::from_utf8(decrypted).map_err(|e| e.to_string())
 }
+
+// ── Double Ratchet Tauri Commands ────────────────────────────────────────────
+
+/// Bootstrap a ratchet session for the SENDER (Alice) from an X3DH shared secret.
+/// Call this once, right after `alice_handshake_and_encrypt`, for each new conversation.
+/// Returns the session as a JSON string — persist it in the vault keyed by conv_id.
+#[tauri::command]
+fn ratchet_init_sender(
+    shared_secret_b64: String,  // SK from x3dh_sender, base64
+    bob_spk_public_b64: String, // Bob's SPK public key, base64
+) -> Result<String, String> {
+    init().map_err(|_| "crypto init failed".to_string())?;
+
+    let secret_bytes = STANDARD
+        .decode(&shared_secret_b64)
+        .map_err(|e| e.to_string())?;
+    let spk_bytes = STANDARD
+        .decode(&bob_spk_public_b64)
+        .map_err(|e| e.to_string())?;
+
+    let mut secret = [0u8; 32];
+    let mut spk = [0u8; 32];
+    if secret_bytes.len() != 32 || spk_bytes.len() != 32 {
+        return Err("shared_secret and spk_public must each be 32 bytes".to_string());
+    }
+    secret.copy_from_slice(&secret_bytes);
+    spk.copy_from_slice(&spk_bytes);
+
+    let session = RatchetSession::init_as_sender(&secret, &spk);
+    session.to_json().map_err(|e| e.to_string())
+}
+
+/// Bootstrap a ratchet session for the RECEIVER (Bob) from an X3DH shared secret.
+/// `bob_spk_public_b64` and `bob_spk_private_b64` are Bob's Signed Pre-Key — already
+/// in the local vault from key generation.
+#[tauri::command]
+fn ratchet_init_receiver(
+    shared_secret_b64: String,
+    bob_spk_public_b64: String,
+    bob_spk_private_b64: String,
+) -> Result<String, String> {
+    init().map_err(|_| "crypto init failed".to_string())?;
+
+    let secret_bytes = STANDARD
+        .decode(&shared_secret_b64)
+        .map_err(|e| e.to_string())?;
+    let spk_pub_bytes = STANDARD
+        .decode(&bob_spk_public_b64)
+        .map_err(|e| e.to_string())?;
+    let spk_prv_bytes = STANDARD
+        .decode(&bob_spk_private_b64)
+        .map_err(|e| e.to_string())?;
+
+    let mut secret = [0u8; 32];
+    let mut spk_pub = [0u8; 32];
+    let mut spk_prv = [0u8; 32];
+    if secret_bytes.len() != 32 {
+        return Err("shared_secret must be 32 bytes".to_string());
+    }
+    if spk_pub_bytes.len() != 32 {
+        return Err("spk_public must be 32 bytes".to_string());
+    }
+    if spk_prv_bytes.len() != 32 {
+        return Err("spk_private must be 32 bytes".to_string());
+    }
+    secret.copy_from_slice(&secret_bytes);
+    spk_pub.copy_from_slice(&spk_pub_bytes);
+    spk_prv.copy_from_slice(&spk_prv_bytes);
+
+    let session =
+        RatchetSession::init_as_receiver(&secret, spk_pub, spk_prv).map_err(|e| e.to_string())?;
+    session.to_json().map_err(|e| e.to_string())
+}
+
+/// Encrypt a plaintext message using the Double Ratchet.
+/// - `session_json`: the current session state (load from vault, update after call)
+/// - `plaintext`: UTF-8 message string
+/// - `conv_id`: conversation identifier used as associated data (binds msg to conversation)
+///
+/// Returns `{ new_session_json, header, ciphertext_b64 }`.
+#[tauri::command]
+fn ratchet_encrypt(
+    session_json: String,
+    plaintext: String,
+    conv_id: String,
+) -> Result<serde_json::Value, String> {
+    let mut session = RatchetSession::from_json(&session_json).map_err(|e| e.to_string())?;
+
+    let (header, ciphertext) = session
+        .encrypt(plaintext.as_bytes(), conv_id.as_bytes())
+        .map_err(|e| e.to_string())?;
+
+    let new_session_json = session.to_json().map_err(|e| e.to_string())?;
+
+    Ok(serde_json::json!({
+        "new_session_json": new_session_json,
+        "header": header,
+        "ciphertext": STANDARD.encode(&ciphertext),
+    }))
+}
+
+/// Decrypt a received message using the Double Ratchet.
+/// - `session_json`: the current session state (load from vault, update after call)
+/// - `header`: the `MessageHeader` received alongside the ciphertext
+/// - `ciphertext_b64`: base64 ciphertext
+/// - `conv_id`: must match what was used during encrypt
+///
+/// Returns `{ new_session_json, plaintext }`.
+#[tauri::command]
+fn ratchet_decrypt(
+    session_json: String,
+    header: MessageHeader,
+    ciphertext_b64: String,
+    conv_id: String,
+) -> Result<serde_json::Value, String> {
+    let mut session = RatchetSession::from_json(&session_json).map_err(|e| e.to_string())?;
+    let ciphertext = STANDARD
+        .decode(&ciphertext_b64)
+        .map_err(|e| e.to_string())?;
+
+    let plaintext_bytes = session
+        .decrypt(&header, &ciphertext, conv_id.as_bytes())
+        .map_err(|e| e.to_string())?;
+
+    let plaintext = String::from_utf8(plaintext_bytes).map_err(|e| e.to_string())?;
+    let new_session_json = session.to_json().map_err(|e| e.to_string())?;
+
+    Ok(serde_json::json!({
+        "new_session_json": new_session_json,
+        "plaintext": plaintext,
+    }))
+}
+
+// ── OTPK replenishment ────────────────────────────────────────────────────────
+
+/// How many unused server-side OTPKs trigger a replenishment cycle.
+const REPLENISH_THRESHOLD: i64 = 10;
+/// How many fresh pairs to generate and upload per cycle.
+const REPLENISH_BATCH_SIZE: usize = 20;
+
+#[derive(serde::Deserialize)]
+struct OtpkCountResponse {
+    count: i64,
+    #[allow(dead_code)]
+    threshold: i64,
+}
+
+#[derive(serde::Deserialize)]
+struct UploadOtpksResponse {
+    uploaded: usize,
+}
+
+#[derive(serde::Serialize)]
+pub struct ReplenishResult {
+    pub needed: bool,
+    pub uploaded: usize,
+    pub server_count_before: i64,
+    pub private_pairs: Vec<OtpkPrivatePair>,
+}
+
+#[derive(serde::Serialize)]
+pub struct OtpkPrivatePair {
+    pub key_id: String,
+    pub private_key: Vec<u8>,
+}
+
+/// Check the server-side OTPK count and upload a fresh batch when below the
+/// replenishment threshold.  Designed to be called fire-and-forget from the
+/// frontend on login and after each outbound X3DH handshake.
+///
+/// **Ordering guarantee**: private keys are written to a local JSON file in
+/// the app data directory *before* public keys are uploaded to the server.
+/// If the app crashes between the two steps, the orphaned local private keys
+/// will simply never be claimed — far safer than orphaned server entries,
+/// which would silently cause decryption failures on Bob's side.
+#[tauri::command]
+async fn check_and_replenish_otpks(
+    session: tauri::State<'_, SessionState>,
+) -> Result<ReplenishResult, String> {
+    let base_url = std::env::var("VITE_API_BASE_URL")
+        .unwrap_or_else(|_| "http://localhost:3000/api/v1".to_string());
+
+    // Read session JWT from in-memory Tauri state.
+    let token = {
+        let guard = session
+            .jwt
+            .read()
+            .map_err(|_| "session state lock poisoned".to_string())?;
+        guard.clone().unwrap_or_default()
+    };
+
+    if token.is_empty() {
+        return Err("No auth token — user must be logged in".to_string());
+    }
+
+    let client = reqwest::Client::new();
+
+    // 1. Ask the server how many unused OTPKs it holds for this device
+    let count_resp = client
+        .get(format!("{}/keys/otpk/count", base_url))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json::<OtpkCountResponse>()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if count_resp.count >= REPLENISH_THRESHOLD {
+        return Ok(ReplenishResult {
+            needed: false,
+            uploaded: 0,
+            server_count_before: count_resp.count,
+            private_pairs: Vec::new(),
+        });
+    }
+
+    // 2. Generate fresh keypairs entirely in Rust — private keys never in JS
+    let pairs = generate_otpk_batch(REPLENISH_BATCH_SIZE);
+    let private_pairs: Vec<OtpkPrivatePair> = pairs
+        .iter()
+        .map(|p| OtpkPrivatePair {
+            key_id: p.key_id.clone(),
+            private_key: p.private_key.to_vec(),
+        })
+        .collect();
+
+    // 3. Upload only the public keys to the server
+    let upload_payload: Vec<serde_json::Value> = pairs
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "key_id":     p.key_id,
+                "public_key": STANDARD.encode(p.public_key),
+            })
+        })
+        .collect();
+
+    let upload_resp = client
+        .post(format!("{}/keys/otpk/upload", base_url))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "keys": upload_payload }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !upload_resp.status().is_success() {
+        return Err(format!("OTPK upload failed: HTTP {}", upload_resp.status()));
+    }
+
+    let uploaded = upload_resp
+        .json::<UploadOtpksResponse>()
+        .await
+        .map_err(|e| e.to_string())?
+        .uploaded;
+
+    Ok(ReplenishResult {
+        needed: true,
+        uploaded,
+        server_count_before: count_resp.count,
+        private_pairs,
+    })
+}
+
+// ── Tauri entry point ─────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_sql::Builder::default().build())
+        .manage(SessionState::default())
         .invoke_handler(tauri::generate_handler![
-            greet, 
-            generate_keys, 
-            alice_handshake_and_encrypt, 
-            bob_handshake_and_decrypt
+            greet,
+            get_or_create_vault_secret,
+            get_or_create_vault_key,
+            verify_vault_key_accessible,
+            clear_vault_session,
+            set_session_jwt,
+            generate_keys,
+            // X3DH (standalone — used to bootstrap ratchet sessions)
+            alice_x3dh,
+            bob_x3dh,
+            // Legacy X3DH+encrypt in one shot (kept for reference)
+            alice_handshake_and_encrypt,
+            bob_handshake_and_decrypt,
+            // Double Ratchet
+            ratchet_init_sender,
+            ratchet_init_receiver,
+            ratchet_encrypt,
+            ratchet_decrypt,
+            // OTPK replenishment
+            check_and_replenish_otpks,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -5,3 +5,8 @@ members = [
     "apps/desktop/src-tauri"
 ]
 resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/mukesh207/Ep2pchat"

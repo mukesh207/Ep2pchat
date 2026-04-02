@@ -1,8 +1,8 @@
 [package]
 name = "desktop"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "Trustline Desktop — Secure E2EE messaging client"
+authors = ["Trustline Contributors"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -28,4 +28,7 @@ uuid = { version = "1.22.0", features = ["v4", "serde"] }
 sodiumoxide = "0.2.7"
 tauri-plugin-sql = { version = "2.3.2", features = ["sqlite"] }
 zeroize = { version = "1.8", features = ["zeroize_derive"] }
-
+rand = "0.9"
+keyring = { version = "2", features = ["linux-secret-service"] }
+hex = "0.4.3"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }

@@ -1,6 +1,19 @@
 import { startRegistration, startAuthentication } from '@simplewebauthn/browser';
 
-const API_BASE = 'http://localhost:3000/api/v1';
+function trimTrailingSlash(value: string) {
+    return value.replace(/\/+$/, "");
+}
+
+function resolveApiBase() {
+    const configuredBase = import.meta.env.VITE_API_BASE_URL?.trim();
+    if (configuredBase) {
+        return trimTrailingSlash(configuredBase);
+    }
+
+    return '/api/v1';
+}
+
+const API_BASE = resolveApiBase();
 
 let authToken = "";
 
@@ -19,27 +32,33 @@ function authHeaders() {
     };
 }
 
+async function requestJson(path: string, init?: RequestInit) {
+    const res = await fetch(`${API_BASE}${path}`, init);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data?.error) {
+        throw new Error(data?.error || `Request failed with status ${res.status}`);
+    }
+    return data;
+}
+
 export async function requestAccess(email: string) {
-    const res = await fetch(`${API_BASE}/auth/request-access`, {
+    return requestJson('/auth/request-access', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email })
     });
-    return res.json();
 }
 
 export async function registerPasskey(userId: string) {
-    const beginRes = await fetch(`${API_BASE}/auth/register-passkey/begin`, {
+    const beginData = await requestJson('/auth/register-passkey/begin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user_id: userId })
     });
-    const beginData = await beginRes.json();
-    if (beginData.error) throw new Error(beginData.error);
 
     const credential = await startRegistration({ optionsJSON: beginData.challenge });
 
-    const completeRes = await fetch(`${API_BASE}/auth/register-passkey/complete`, {
+    return requestJson('/auth/register-passkey/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -47,21 +66,18 @@ export async function registerPasskey(userId: string) {
             credential
         })
     });
-    return completeRes.json();
 }
 
 export async function loginPasskey(email: string) {
-    const beginRes = await fetch(`${API_BASE}/auth/login/begin`, {
+    const beginData = await requestJson('/auth/login/begin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email })
     });
-    const beginData = await beginRes.json();
-    if (beginData.error) throw new Error(beginData.error);
 
     const credential = await startAuthentication({ optionsJSON: beginData.challenge });
 
-    const completeRes = await fetch(`${API_BASE}/auth/login/complete`, {
+    return requestJson('/auth/login/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -69,57 +85,94 @@ export async function loginPasskey(email: string) {
             credential
         })
     });
-    return completeRes.json();
 }
 
 export async function getPendingUsers() {
-    const res = await fetch(`${API_BASE}/admin/pending-users`, { headers: authHeaders() });
-    return res.json();
+    return requestJson('/admin/pending', { headers: authHeaders() });
 }
 
 export async function approveUser(userId: string) {
-    const res = await fetch(`${API_BASE}/admin/approve-user`, {
+    return requestJson(`/admin/approve/${userId}`, {
+        method: 'POST',
+        headers: authHeaders(),
+    });
+}
+
+export async function denyUser(userId: string) {
+    return requestJson(`/admin/deny/${userId}`, {
+        method: 'POST',
+        headers: authHeaders(),
+    });
+}
+
+export async function getUserDevices(userId: string) {
+    return requestJson(`/admin/devices/${userId}`, { headers: authHeaders() });
+}
+
+export async function revokeAdminDevice(deviceId: string) {
+    return requestJson(`/admin/revoke/${deviceId}`, {
+        method: 'POST',
+        headers: authHeaders(),
+    });
+}
+
+export async function getAuditLogs(page: number = 1, pageSize: number = 50) {
+    return requestJson(`/admin/audit?page=${page}&page_size=${pageSize}`, { headers: authHeaders() });
+}
+
+// Legacy wrappers kept for compatibility with older components/tests.
+export async function approveUserLegacy(userId: string) {
+    return requestJson('/admin/approve-user', {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify({ user_id: userId })
     });
-    return res.json();
 }
 
 export async function getAllUsers() {
-    const res = await fetch(`${API_BASE}/admin/users`, { headers: authHeaders() });
-    return res.json();
+    return requestJson('/admin/users', { headers: authHeaders() });
 }
 
-export async function getAuditLogs() {
-    const res = await fetch(`${API_BASE}/admin/audit-logs`, { headers: authHeaders() });
-    return res.json();
+export async function getAuditLogsLegacy() {
+    return requestJson('/admin/audit-logs', { headers: authHeaders() });
 }
 
-export async function revokeDevice(deviceId: string) {
-    const res = await fetch(`${API_BASE}/admin/revoke-device`, {
+export async function revokeDeviceLegacy(deviceId: string) {
+    return requestJson('/admin/revoke-device', {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify({ device_id: deviceId })
     });
-    return res.json();
+}
+
+export async function revokeDevice(deviceId: string) {
+    return revokeAdminDevice(deviceId);
 }
 
 export async function getUsers() {
-    const res = await fetch(`${API_BASE}/users/users`, { headers: authHeaders() });
-    return res.json();
+    return requestJson('/users/users', { headers: authHeaders() });
+}
+
+export async function getMyDevices() {
+    return requestJson('/users/devices', { headers: authHeaders() });
+}
+
+export async function revokeOwnDevice(deviceId: string) {
+    return requestJson('/users/revoke-device', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ device_id: deviceId })
+    });
 }
 
 export async function uploadKeys(payload: any) {
-    const res = await fetch(`${API_BASE}/keys/upload`, {
+    return requestJson('/keys/upload', {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify(payload)
     });
-    return res.json();
 }
 
 export async function getUserKeys(userId: string) {
-    const res = await fetch(`${API_BASE}/keys/${userId}`, { headers: authHeaders() });
-    return res.json();
+    return requestJson(`/keys/${userId}`, { headers: authHeaders() });
 }

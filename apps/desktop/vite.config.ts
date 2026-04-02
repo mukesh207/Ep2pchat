@@ -1,12 +1,22 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { fileURLToPath, URL } from "node:url";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
+const backendOrigin = process.env.VITE_DEV_BACKEND_ORIGIN || "http://localhost:3000";
+const backendWsOrigin = backendOrigin.startsWith("https://")
+  ? backendOrigin.replace("https://", "wss://")
+  : backendOrigin.replace("http://", "ws://");
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [react()],
+  resolve: {
+    alias: {
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
+    },
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
@@ -25,8 +35,17 @@ export default defineConfig(async () => ({
         }
       : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],
     },
+    proxy: {
+      '/api': {
+        target: backendOrigin,
+        changeOrigin: true,
+      },
+      '/ws': {
+        target: backendWsOrigin,
+        ws: true,
+      }
+    }
   },
 }));

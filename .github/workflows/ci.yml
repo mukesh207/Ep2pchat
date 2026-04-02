@@ -1,0 +1,190 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: trustline
+          POSTGRES_PASSWORD: trustline
+          POSTGRES_DB: trustline
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U trustline -d trustline"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      nats:
+        image: nats:2.10-alpine
+        ports:
+          - 4222:4222
+        options: >-
+          --health-cmd "wget -q --spider http://127.0.0.1:8222/healthz || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+        command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222"]
+
+    env:
+      DATABASE_URL: postgres://trustline:trustline@localhost:5432/trustline
+      NATS_URL: nats://127.0.0.1:4222
+      JWT_SECRET: ci-test-secret
+      FRONTEND_URL: http://localhost:1420
+      CORS_ALLOWED_ORIGINS: http://localhost:1420,http://localhost:5173,tauri://localhost
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Run cargo check
+        run: cargo check --workspace
+
+      - name: Run cargo test
+        run: cargo test --workspace -- --nocapture
+
+      - name: Build backend image
+        run: docker build -t trustline-backend-ci .
+
+      - name: Render production compose
+        run: docker compose --env-file deploy/.env.production.example -f deploy/docker-compose.production.yml config
+
+  desktop:
+    name: Desktop Web Layer
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: apps/desktop
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web layer
+        env:
+          VITE_API_BASE_URL: https://api.example.com/api/v1
+          VITE_WS_BASE_URL: wss://api.example.com/ws
+          VITE_DEV_BACKEND_ORIGIN: https://api.example.com
+        run: npm run build
+
+  integration-e2e:
+    name: Integration E2E
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: trustline
+          POSTGRES_PASSWORD: trustline
+          POSTGRES_DB: trustline
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U trustline -d trustline"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      nats:
+        image: nats:2.10-alpine
+        ports:
+          - 4222:4222
+        options: >-
+          --health-cmd "wget -q --spider http://127.0.0.1:8222/healthz || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+        command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222"]
+
+    env:
+      DATABASE_URL: postgres://trustline:trustline@localhost:5432/trustline
+      NATS_URL: nats://127.0.0.1:4222
+      JWT_SECRET: ci-test-secret
+      FRONTEND_URL: http://localhost:1420
+      CORS_ALLOWED_ORIGINS: http://127.0.0.1:1420,http://localhost:1420,http://localhost:5173,tauri://localhost
+      TEST_MODE: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install desktop deps
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Install Playwright browser
+        working-directory: apps/desktop
+        run: npx playwright install --with-deps chromium
+
+      - name: Start backend server (TEST_MODE)
+        run: |
+          cargo run -p backend > backend.log 2>&1 &
+          echo $! > backend.pid
+
+      - name: Wait for backend health
+        run: |
+          for i in {1..60}; do
+            if curl -fsS http://127.0.0.1:3000/health >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Backend failed to start"
+          cat backend.log || true
+          exit 1
+
+      - name: Run Playwright E2E
+        working-directory: apps/desktop
+        env:
+          VITE_DEV_BACKEND_ORIGIN: http://127.0.0.1:3000
+          VITE_E2E_MODE: "true"
+          E2E_BACKEND_ORIGIN: http://127.0.0.1:3000
+        run: npm run e2e
+
+      - name: Backend logs (on failure)
+        if: failure()
+        run: cat backend.log || true

@@ -1,39 +1,216 @@
-export type WsMessage = {
+// ── Trustline WebSocket Client ──────────────────────────────────────────────
+// Provides reliable WebSocket connectivity with:
+// - Exponential backoff reconnection (1s → 30s)
+// - Outbound message queue (flush on reconnect)
+// - Connection state tracking with callbacks
+// - Ping/pong heartbeat (25s interval)
+
+/** Payload shape for all WebSocket messages. */
+export interface WsMessage {
     type: string;
-    payload: any;
-};
+    payload: Record<string, unknown>;
+}
+
+/** Possible connection states for the WebSocket client. */
+export type ConnectionState =
+    | "CONNECTING"
+    | "CONNECTED"
+    | "DISCONNECTED"
+    | "RECONNECTING";
+
+// ── Backoff configuration ──────────────────────────────────────────────────
+
+const BACKOFF_INITIAL_MS = 1000;
+const BACKOFF_MAX_MS = 30000;
+const BACKOFF_MULTIPLIER = 2;
+const HEARTBEAT_INTERVAL_MS = 25000;
 
 export class TrustlineSocket {
     private ws: WebSocket | null = null;
     private handlers: ((msg: WsMessage) => void)[] = [];
-    private currentToken: string = "";
+    private stateHandlers: ((state: ConnectionState) => void)[] = [];
+    private currentToken = "";
+    private disabled = false;
+    private reconnectTimer: number | null = null;
+    private heartbeatTimer: number | null = null;
+    private currentDeviceId: string | null = null;
+    private backoffMs = BACKOFF_INITIAL_MS;
+    private _state: ConnectionState = "DISCONNECTED";
+
+    /** Messages queued while disconnected — flushed on reconnect. */
+    private outboundQueue: string[] = [];
 
     constructor(private baseUrl: string) {}
 
-    connect(token: string = "") {
+    /** Current connection state (read-only). */
+    get connectionState(): ConnectionState {
+        return this._state;
+    }
+
+    /** Tear down the socket completely (e.g. on logout). */
+    destroy(): void {
+        this.disabled = true;
+        this.clearTimers();
+        if (this.ws) {
+            this.ws.onclose = null;
+            this.ws.onerror = null;
+            this.ws.onmessage = null;
+            this.ws.close(1000, "logged out");
+            this.ws = null;
+        }
+        this.outboundQueue = [];
+        this.setState("DISCONNECTED");
+    }
+
+    /** Open (or reconnect) the WebSocket connection. */
+    connect(token = "", deviceId?: string | null): void {
+        if (this.disabled) this.disabled = false;
         if (token) this.currentToken = token;
-        const url = this.currentToken ? `${this.baseUrl}?token=${this.currentToken}` : this.baseUrl;
-        
+        this.currentDeviceId = deviceId ?? null;
+
+        this.clearTimers();
+        this.setState("CONNECTING");
+
+        const url = new URL(this.baseUrl, window.location.href);
+        if (this.currentToken) url.searchParams.set("token", this.currentToken);
+        if (this.currentDeviceId) url.searchParams.set("device_id", this.currentDeviceId);
+
         this.ws = new WebSocket(url);
-        this.ws.onmessage = (event) => {
-            const msg: WsMessage = JSON.parse(event.data);
-            this.handlers.forEach(h => h(msg));
+
+        this.ws.onopen = () => {
+            this.backoffMs = BACKOFF_INITIAL_MS; // reset backoff on success
+            this.setState("CONNECTED");
+            this.flushQueue();
+            this.startHeartbeat();
         };
+
+        this.ws.onmessage = (event) => {
+            try {
+                const msg: WsMessage = JSON.parse(event.data as string);
+                this.handlers.forEach((h) => h(msg));
+            } catch {
+                console.warn("[WS] Failed to parse incoming message");
+            }
+        };
+
         this.ws.onclose = () => {
-            console.log("Disconnected. Reconnecting...");
-            setTimeout(() => this.connect(this.currentToken), 3000);
+            this.ws = null;
+            this.stopHeartbeat();
+            this.scheduleReconnect();
+        };
+
+        this.ws.onerror = () => {
+            // onerror is always followed by onclose — let onclose handle reconnection
         };
     }
 
-    send(type: string, payload: any) {
+    /**
+     * Send a typed message. If the socket is not CONNECTED the message
+     * is queued and will be sent automatically once reconnected.
+     */
+    send(type: string, payload: Record<string, unknown>): void {
+        const raw = JSON.stringify({ type, payload });
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({ type, payload }));
+            this.ws.send(raw);
+        } else {
+            this.outboundQueue.push(raw);
         }
     }
 
-    onMessage(handler: (msg: WsMessage) => void) {
+    /** Register a handler for incoming messages. */
+    onMessage(handler: (msg: WsMessage) => void): void {
         this.handlers.push(handler);
+    }
+
+    /** Register a handler for connection state changes. */
+    onConnectionStateChange(handler: (state: ConnectionState) => void): void {
+        this.stateHandlers.push(handler);
+    }
+
+    // ── Private helpers ────────────────────────────────────────────────────
+
+    private setState(state: ConnectionState): void {
+        if (this._state === state) return;
+        this._state = state;
+        this.stateHandlers.forEach((h) => h(state));
+    }
+
+    /** Exponential backoff reconnection. */
+    private scheduleReconnect(): void {
+        if (this.disabled) return;
+        if (this.reconnectTimer !== null) return;
+
+        this.setState("RECONNECTING");
+        console.info(`[WS] Reconnecting in ${this.backoffMs}ms...`);
+
+        this.reconnectTimer = window.setTimeout(() => {
+            this.reconnectTimer = null;
+            this.connect(this.currentToken, this.currentDeviceId);
+        }, this.backoffMs);
+
+        // Increase backoff for next attempt (capped)
+        this.backoffMs = Math.min(this.backoffMs * BACKOFF_MULTIPLIER, BACKOFF_MAX_MS);
+    }
+
+    /** Flush all queued outbound messages. */
+    private flushQueue(): void {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        while (this.outboundQueue.length > 0) {
+            const raw = this.outboundQueue.shift()!;
+            this.ws.send(raw);
+        }
+    }
+
+    /** Ping the server every 25s to keep the connection alive. */
+    private startHeartbeat(): void {
+        this.stopHeartbeat();
+        this.heartbeatTimer = window.setInterval(() => {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.send(JSON.stringify({ type: "PING", payload: {} }));
+            }
+        }, HEARTBEAT_INTERVAL_MS);
+    }
+
+    private stopHeartbeat(): void {
+        if (this.heartbeatTimer !== null) {
+            window.clearInterval(this.heartbeatTimer);
+            this.heartbeatTimer = null;
+        }
+    }
+
+    private clearTimers(): void {
+        if (this.reconnectTimer !== null) {
+            window.clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        this.stopHeartbeat();
     }
 }
 
-export const socket = new TrustlineSocket("ws://localhost:3000/ws");
+// ── Module-level singleton ─────────────────────────────────────────────────
+
+function trimTrailingSlash(value: string): string {
+    return value.replace(/\/+$/, "");
+}
+
+function resolveWebSocketBase(): string {
+    const configuredBase = import.meta.env.VITE_WS_BASE_URL?.trim();
+    if (configuredBase) {
+        return trimTrailingSlash(configuredBase);
+    }
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    return `${protocol}://${window.location.host}/ws`;
+}
+
+/** Singleton WebSocket client instance. */
+export const socket = new TrustlineSocket(resolveWebSocketBase());
+
+/** Convenience: tear down the global socket (e.g. on logout). */
+export function destroySocket(): void {
+    socket.destroy();
+}
+
+/** Get the current connection state of the global socket. */
+export function getConnectionState(): ConnectionState {
+    return socket.connectionState;
+}

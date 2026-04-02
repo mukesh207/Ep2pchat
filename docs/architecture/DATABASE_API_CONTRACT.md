@@ -182,5 +182,6 @@ The server blindly routes the message to Bob's active WebSocket connection.
 For the HR Checkpoint / Onboarding flow, standard HTTPS REST endpoints are used before a permanent WebSocket is established.
 
 *   `POST /api/v1/auth/request-access` - Generates the access code for IT approval.
-*   `POST /api/v1/auth/register-passkey` - The WebAuthn ritual to register a new device to an approved User ID.
+*   `POST /api/v1/auth/register-passkey/begin` - Starts the WebAuthn registration challenge.
+*   `POST /api/v1/auth/register-passkey/complete` - Completes passkey registration with the signed credential.
 *   `GET /api/v1/admin/pending-users` - Fetches the queue of employees waiting for approval (Admin only).

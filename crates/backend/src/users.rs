@@ -1,36 +1,53 @@
+use crate::auth::AuthContext;
+use crate::AppState;
+use axum::extract::ws::Message as WsMessage;
 use axum::{
     extract::State,
     http::StatusCode,
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
+use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{json, Value};
 use sqlx::Row;
 use uuid::Uuid;
-use crate::AppState;
-use crate::auth::AuthContext;
+// RLS wrappers already available in `crate::db`
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/users", get(get_users))
+        .route("/devices", get(get_my_devices))
+        .route("/revoke-device", post(revoke_own_device))
 }
 
 #[derive(Serialize)]
 pub struct UserInfo {
     pub id: Uuid,
     pub email: String,
+    pub username: Option<String>,
+    pub device_count: i64,
 }
 
 pub async fn get_users(
     State(state): State<AppState>,
     auth: AuthContext,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let records = sqlx::query(
-        "SELECT id, email FROM users WHERE status = 'active' AND org_id = $1"
-    )
-    .bind(auth.claims.org_id)
-    .fetch_all(&state.db)
+    // RLS: org_id scoped
+    let records = crate::db::with_rls_context(&state.db, auth.claims.org_id, |mut tx| {
+        Box::pin(async move {
+            sqlx::query(
+                "SELECT u.id, u.email, u.username, COUNT(d.id) AS device_count
+             FROM users u
+             LEFT JOIN devices d ON u.id = d.user_id AND d.is_active = TRUE
+             WHERE u.status = 'active' AND u.org_id = $1
+             GROUP BY u.id",
+            )
+            .bind(auth.claims.org_id)
+            .fetch_all(&mut *tx)
+            .await
+        })
+    })
     .await;
 
     match records {
@@ -40,10 +57,131 @@ pub async fn get_users(
                 users.push(UserInfo {
                     id: row.get("id"),
                     email: row.get("email"),
+                    username: row.get("username"),
+                    device_count: row.get("device_count"),
                 });
             }
             Ok(Json(json!({"users": users})))
         }
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()})))),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )),
+    }
+}
+
+#[derive(Serialize)]
+pub struct MyDeviceInfo {
+    pub id: Uuid,
+    pub device_name: String,
+    pub is_active: bool,
+    pub last_seen: chrono::DateTime<chrono::Utc>,
+}
+
+pub async fn get_my_devices(
+    State(state): State<AppState>,
+    auth: AuthContext,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    // RLS: org_id scoped
+    let rows = crate::db::with_rls_context(&state.db, auth.claims.org_id, |mut tx| {
+        Box::pin(async move {
+            sqlx::query(
+                "SELECT id, device_name, is_active, last_seen
+             FROM devices
+             WHERE user_id = $1 AND org_id = $2
+             ORDER BY last_seen DESC",
+            )
+            .bind(auth.claims.sub)
+            .bind(auth.claims.org_id)
+            .fetch_all(&mut *tx)
+            .await
+        })
+    })
+    .await;
+
+    match rows {
+        Ok(records) => {
+            let devices: Vec<MyDeviceInfo> = records
+                .into_iter()
+                .map(|row| MyDeviceInfo {
+                    id: row.get("id"),
+                    device_name: row.get("device_name"),
+                    is_active: row.get("is_active"),
+                    last_seen: row.get("last_seen"),
+                })
+                .collect();
+            Ok(Json(json!({ "devices": devices })))
+        }
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct RevokeOwnDevicePayload {
+    pub device_id: Uuid,
+}
+
+pub async fn revoke_own_device(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Json(payload): Json<RevokeOwnDevicePayload>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    // RLS: org_id scoped
+    let res = crate::db::with_rls_context(&state.db, auth.claims.org_id, |mut tx| {
+        Box::pin(async move {
+            let row = sqlx::query(
+                "UPDATE devices
+             SET is_active = FALSE
+             WHERE id = $1 AND user_id = $2 AND org_id = $3
+             RETURNING id",
+            )
+            .bind(payload.device_id)
+            .bind(auth.claims.sub)
+            .bind(auth.claims.org_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+
+            if row.is_some() {
+                let _ = sqlx::query("DELETE FROM one_time_pre_keys WHERE device_id = $1")
+                    .bind(payload.device_id)
+                    .execute(&mut *tx)
+                    .await?;
+
+                let _ = sqlx::query(
+                "INSERT INTO audit_logs (org_id, actor_id, action, details) VALUES ($1, $2, $3, $4)"
+            )
+            .bind(auth.claims.org_id)
+            .bind(auth.claims.sub)
+            .bind("DEVICE_SELF_REVOKED")
+            .bind(json!({ "device_id": payload.device_id }))
+            .execute(&mut *tx)
+            .await?;
+            }
+
+            Ok(row)
+        })
+    })
+    .await;
+
+    match res {
+        Ok(Some(_)) => {
+            if let Some((_, conn)) = state.ws.connections.remove(&payload.device_id) {
+                let event = json!({ "type": "DEVICE_REVOKED", "payload": { "device_id": payload.device_id } });
+                let _ = conn.tx.send(WsMessage::Text(event.to_string().into()));
+                let _ = conn.tx.send(WsMessage::Close(None));
+            }
+            Ok(Json(json!({ "status": "success" })))
+        }
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Device not found"})),
+        )),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )),
     }
 }

@@ -1,35 +1,36 @@
 # Rust
 target/
-**/*.rs.bk
-Cargo.lock
+crates/crypto_core/Cargo.lock
 
-# Node.js
+# Node
 node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
 dist/
-dist-ssr/
-*.local
 
 # Tauri
-src-tauri/target/
-src-tauri/gen/
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/target/
 
-# OS / IDE
-.DS_Store
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Environment
+# Secrets
 .env
-.env.local
-.env.*.local
+.env.*
+.env.production
+auth_token.txt
+otpk_vault.json
+*.pem
+*.key
 
-# Runtime
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+
+# Logs
 *.log
-*.pid
-backend.pid
+
+# Generated reports
+FILESYSTEM_REPORT.md
+
+# Test output
+test-results/
+playwright-report/
+coverage/

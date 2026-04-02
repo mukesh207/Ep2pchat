@@ -1,68 +1,193 @@
-# Trustline: Enterprise-Grade E2EE Messaging
+# 🛡️ Trustline
 
-Trustline is a secure, multi-tenant, End-to-End Encrypted (E2EE) messaging platform designed for highly confidential enterprise operations. It eliminates passwords in favor of biometric Passkeys (WebAuthn) and ensures complete server-side blindness through advanced cryptographic handshakes.
+**Enterprise-Grade E2EE Messaging — Zero-Knowledge by Design**
 
-## 🛡️ Core Security Features
+[![CI](https://github.com/mukesh207/Ep2pchat/actions/workflows/ci.yml/badge.svg)](https://github.com/mukesh207/Ep2pchat/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-*   **Zero-Knowledge Architecture:** The server acts as a blind router. It stores encrypted blobs but has no access to the keys required to decrypt them.
-*   **Passwordless Onboarding:** Identity is verified via corporate email and approved by IT Admins. Authentication is handled strictly via WebAuthn/FIDO2 (FaceID, TouchID, Windows Hello).
-*   **X3DH Handshake:** Implements the Extended Triple Diffie-Hellman (X3DH) protocol for secure session establishment.
-*   **Tenant Isolation:** Powered by PostgreSQL Row-Level Security (RLS), ensuring data from different organizations is cryptographically and logically separated at the database level.
-*   **Local Vault:** All private keys and message history are stored in a secure, local SQLite database on the user's device, never leaving the hardware.
+---
 
-## 🏗️ Project Architecture
+## Overview
 
-```text
-├── apps/desktop          # Tauri v2 + React (TypeScript) frontend
-├── crates/backend        # Axum + Tokio + SQLx backend API & WebSocket engine
-├── crates/crypto_core    # Shared Rust library for X3DH and libsodium primitives
-├── migrations/           # Automated SQL schema & RLS policy management
-├── docs/                 # Detailed FRD, Architecture, and UI/UX specs
-└── docker-compose.yml    # Development & Production orchestration
+Trustline is a high-security, multi-tenant, end-to-end encrypted messaging platform for confidential enterprise communication. The server operates as a **zero-knowledge blind router** — it routes encrypted blobs but never possesses the keys to decrypt them. All cryptographic operations execute client-side in Rust via Tauri IPC, ensuring private keys never leave the device.
+
+## Key Features
+
+- 🔐 **Zero-Knowledge Blind Router** — server never sees plaintext; stores only encrypted blobs
+- 🔑 **Signal Protocol** — X3DH key exchange + Double Ratchet for forward secrecy
+- 🪪 **Passwordless Auth** — WebAuthn/FIDO2 passkeys (no passwords anywhere)
+- 🏢 **Tenant Isolation** — PostgreSQL Row-Level Security enforces org boundaries at the DB layer
+- 📡 **Distributed Routing** — NATS JetStream for cross-instance message delivery
+- 🗄️ **Encrypted Local Vault** — SQLCipher + AES-GCM column encryption + FTS5 search
+- 🔄 **OTPK Auto-Replenishment** — one-time pre-keys generated in Rust, auto-uploaded
+- 📱 **Offline Message Replay** — messages persisted and delivered on reconnect
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                        Desktop Client                           │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────┐ │
+│  │  React 19 UI │←→│  Tauri IPC   │←→│  crypto_core (Rust)    │ │
+│  │  (TypeScript) │  │  Commands    │  │  X3DH + Double Ratchet │ │
+│  └──────┬───────┘  └──────────────┘  └────────────────────────┘ │
+│         │  WebSocket                                             │
+└─────────┼────────────────────────────────────────────────────────┘
+          │
+          ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                     Backend (Rust / Axum)                        │
+│  ┌──────────┐  ┌──────────────┐  ┌──────────┐  ┌─────────────┐ │
+│  │ WebSocket│  │  WebAuthn    │  │  Key Mgmt│  │  Admin API  │ │
+│  │  Router  │  │  Auth        │  │  (X3DH)  │  │  (RLS)      │ │
+│  └────┬─────┘  └──────────────┘  └──────────┘  └─────────────┘ │
+│       │                                                          │
+│  ┌────▼─────────────────┐  ┌─────────────────────────────────┐  │
+│  │  NATS JetStream      │  │  PostgreSQL 16 (RLS)            │  │
+│  │  Distributed PubSub  │  │  Encrypted blob storage         │  │
+│  └──────────────────────┘  └─────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-## 🚀 Getting Started
+## Tech Stack
 
-### Prerequisites
-*   **Rust:** 1.80+ (`rustup`)
-*   **Node.js:** v20+
-*   **Docker & Docker Compose**
-*   **System Libs (Linux):** `libwebkit2gtk-4.1-dev`, `libsodium-dev`
+| Layer | Technology |
+|-------|-----------|
+| **Backend** | Rust, Axum 0.8, Tokio, SQLx 0.8, WebAuthn-rs |
+| **Desktop** | Tauri v2, React 19, Vite 7, TypeScript 5, Tailwind CSS 4 |
+| **Crypto** | libsodium (sodiumoxide), X3DH, Double Ratchet, ChaCha20-Poly1305 |
+| **Database** | PostgreSQL 16 + Row-Level Security |
+| **Messaging** | NATS JetStream |
+| **Auth** | WebAuthn / FIDO2 Passkeys, JWT |
+| **Testing** | Playwright (E2E), cargo test (unit/integration) |
+| **CI/CD** | GitHub Actions |
 
-### 1. Local Infrastructure
-Start the database and messaging bus:
+## Project Structure
+
+```
+├── apps/desktop/              # Tauri v2 + React desktop client
+│   ├── src/                   # React UI, API client, crypto wrappers
+│   ├── src-tauri/             # Rust-based Tauri commands
+│   └── e2e/                   # Playwright E2E tests
+├── crates/
+│   ├── backend/               # Axum API server (auth, ws, keys, admin)
+│   └── crypto_core/           # X3DH + Double Ratchet library
+├── migrations/                # PostgreSQL schema + RLS policies (14 files)
+├── deploy/                    # Production Docker Compose + Traefik
+├── docs/                      # Architecture, ADRs, threat model, product docs
+├── docker-compose.yml         # Dev infrastructure (Postgres + NATS)
+├── Dockerfile                 # Multi-stage backend build
+└── Makefile                   # Deployment automation
+```
+
+## Prerequisites
+
+- **Rust** 1.80+ (`rustup install stable`)
+- **Node.js** 20+ with npm
+- **Docker** & Docker Compose
+- **libsodium-dev** (`apt install libsodium-dev` / `brew install libsodium`)
+- **System keychain** — GNOME Keyring (Linux), macOS Keychain, or Windows Credential Manager
+
+## Quick Start
+
 ```bash
+# 1. Clone the repository
+git clone https://github.com/mukesh207/Ep2pchat.git
+cd Ep2pchat
+
+# 2. Configure environment
+cp .env.example .env
+# Edit .env with your own JWT_SECRET and database password
+
+# 3. Start infrastructure (PostgreSQL + NATS)
 docker compose up -d
-```
 
-### 2. Start the Backend
-```bash
-cd crates/backend
-# Ensure DATABASE_URL is set in .env
-cargo run
-```
-The API will be available at `http://localhost:3000`.
+# 4. Run the backend
+cargo run -p backend
 
-### 3. Start the Desktop App
-```bash
+# 5. In another terminal — install frontend deps and launch the desktop app
 cd apps/desktop
 npm install
 npm run tauri dev
 ```
 
-## 🛠️ Development Workflows
+## Demo Mode
 
-*   **Database Migrations:** SQL files in `/migrations` are automatically applied by the backend on startup.
-*   **Cryptographic Core:** Logic is shared between the desktop app and backend via the `crypto_core` crate.
-*   **Admin Dashboard:** Access the dashboard by clicking "Admin Access" on the welcome screen. In dev mode, registration is open by default.
+Run the one-click demo launcher to spin up a fully seeded environment:
 
-## 🚢 Deployment
+```bash
+./demo.sh
+```
 
-To deploy the full production stack with automated TLS (via Traefik and Let's Encrypt):
+This starts the backend in `TEST_MODE` with pre-configured test users and organizations.
 
-## 📅 Project Roadmap
-Detailed progress is tracked in our elite [Implementation Plan](/home/st4rk/.gemini/antigravity/brain/a0da5252-5180-4d06-b27f-127f6d10cf50/implementation_plan.md).
+## Testing
 
----
-**Secure Communication for the Modern Enterprise.**  
-*Built with Rust & Tauri.*
+```bash
+# Backend unit & integration tests
+cargo test --workspace
+
+# Frontend E2E tests (requires running backend + infrastructure)
+cd apps/desktop
+npm run e2e
+
+# Rust linting
+cargo clippy --workspace
+cargo fmt --check
+```
+
+## Deployment
+
+Production deployment uses Docker Compose with Traefik for TLS termination:
+
+```bash
+# Preview production config
+make prod-config
+
+# Deploy production stack
+make prod-up
+
+# Check health endpoints
+make health
+```
+
+See [`deploy/README.md`](deploy/README.md) for detailed deployment instructions.
+
+## Security Model
+
+| Property | Implementation |
+|----------|---------------|
+| **Zero-Knowledge** | Server stores only encrypted blobs; all crypto runs client-side |
+| **Forward Secrecy** | Double Ratchet derives unique per-message keys |
+| **Post-Compromise Security** | Ratchet self-heals after key exposure |
+| **Tenant Isolation** | PostgreSQL RLS enforces org boundaries at the row level |
+| **Key Storage** | Private keys in OS Secure Enclave / encrypted SQLite vault |
+| **Authentication** | Hardware-bound WebAuthn passkeys (no passwords) |
+
+For the full threat model, see [`docs/architecture/THREAT_MODEL_CRYPTO.md`](docs/architecture/THREAT_MODEL_CRYPTO.md).
+
+### Responsible Disclosure
+
+If you discover a security vulnerability, please report it to **security@trustline.app**. See [`SECURITY.md`](SECURITY.md) for our disclosure policy.
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Architecture Blueprint](docs/architecture/ARCHITECTURE.md) | System design and component overview |
+| [Database & API Contract](docs/architecture/DATABASE_API_CONTRACT.md) | Schema, WebSocket protocol, REST API |
+| [Crypto Threat Model](docs/architecture/THREAT_MODEL_CRYPTO.md) | Threat actors, attack vectors, mitigations |
+| [Functional Requirements](docs/product/FRD.md) | User stories and feature specs |
+| [UI/UX Journey](docs/product/UI_UX_JOURNEY.md) | User flows and interaction patterns |
+| [ADR-001](docs/adr/ADR-001.md) | Zero-Knowledge Blind Router Architecture |
+| [ADR-002](docs/adr/ADR-002.md) | WebAuthn/FIDO2 Passwordless Authentication |
+| [ADR-003](docs/adr/ADR-003.md) | PostgreSQL RLS Tenant Isolation |
+| [ADR-004](docs/adr/ADR-004.md) | Double Ratchet Forward Secrecy |
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for branch naming, commit format, and development setup.
+
+## License
+
+[MIT](LICENSE) © Trustline Contributors

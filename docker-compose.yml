@@ -21,14 +21,14 @@ services:
   nats:
     image: nats:2-alpine
     container_name: trustline-nats
-    command: ["--jetstream", "--store_dir", "/data"]
+    command: ["-m", "8222", "--jetstream", "--store_dir", "/data"]
     ports:
       - "4222:4222"   # Client connections
       - "8222:8222"   # HTTP monitoring
     volumes:
       - natsdata:/data
     healthcheck:
-      test: ["CMD", "nats-server", "--signal", "ldm"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8222/healthz"]
       interval: 10s
       timeout: 5s
       retries: 3

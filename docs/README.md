@@ -1,24 +1,37 @@
 # Trustline Documentation
 
-Welcome to the Trustline technical documentation index. Due to the high-security nature and complex cryptography involved in this platform, the documentation is strictly segregated by domain.
+Comprehensive technical and product documentation for the Trustline E2EE messaging platform.
 
-## 📂 Directory Structure
+## Architecture
 
-### `/architecture`
-Contains deep-dives into the mathematical foundations, system boundaries, and structural software designs.
-*   **`ARCHITECTURE.md`**: Broad overview of the Rust backend routing and Tauri IPC boundaries.
-*   **`THREAT_MODEL_CRYPTO.md`**: Analysis of potential attack vectors, `libsodium` primitive implementations (X3DH, Double Ratchet), and mitigation strategies against rogue relays.
-*   **`DATABASE_API_CONTRACT.md`**: The strict schema types, Axum API paths, and PostgreSQL Row-Level Security (RLS) policies enforcing multi-tenancy.
+| Document | Description |
+|----------|-------------|
+| [ARCHITECTURE.md](architecture/ARCHITECTURE.md) | Technical architecture and system design |
+| [DATABASE_API_CONTRACT.md](architecture/DATABASE_API_CONTRACT.md) | Database schema, WebSocket protocol, REST API |
+| [THREAT_MODEL_CRYPTO.md](architecture/THREAT_MODEL_CRYPTO.md) | Cryptographic threat model and mitigations |
 
-### `/product`
-Contains the overarching vision and functional requirements.
-*   **`PROJECT_OVERVIEW.md`**: The high-level executive summary, tech stack, and core value propositions (Zero-Knowledge, Passwordless).
-*   **`CONCEPT.md`**: The initial conceptual outlines and feature targets.
-*   **`FRD.md`**: Functional Requirements Document — detailed behavior rules for authentication, messaging, and system limits.
-*   **`UI_UX_JOURNEY.md`**: User flow maps and interface state transitions for the tactical Cyberpunk aesthetic.
+## Architecture Decision Records (ADRs)
 
-### `/management`
-Contains development tracking, operational methodologies, and hiring profiles.
-*   **`methodology.md`**: The custom "High-Assurance Agile / SecDevOps" lifecycle designed specifically for building hostile-environment encryption software.
-*   **`team_requirements.md`**: Elite engineering role descriptions required to build and audit the `ep2pchat` stack safely.
-*   **`frontend_redesign_walkthrough.md`**: Visual and technical verification log of the frontend redesign phase.
+| ADR | Title | Status |
+|-----|-------|--------|
+| [ADR-001](adr/ADR-001.md) | Zero-Knowledge Blind Router Architecture | Accepted |
+| [ADR-002](adr/ADR-002.md) | WebAuthn/FIDO2 Passwordless Authentication | Accepted |
+| [ADR-003](adr/ADR-003.md) | PostgreSQL RLS Tenant Isolation | Accepted |
+| [ADR-004](adr/ADR-004.md) | Double Ratchet Forward Secrecy | Accepted |
+
+## Product
+
+| Document | Description |
+|----------|-------------|
+| [PROJECT_OVERVIEW.md](product/PROJECT_OVERVIEW.md) | High-level project overview |
+| [CONCEPT.md](product/CONCEPT.md) | Initial product concept |
+| [FRD.md](product/FRD.md) | Functional requirements document |
+| [UI_UX_JOURNEY.md](product/UI_UX_JOURNEY.md) | UI/UX design specifications |
+
+## Management
+
+| Document | Description |
+|----------|-------------|
+| [methodology.md](management/methodology.md) | High-Assurance Agile (SecDevOps) |
+| [team_requirements.md](management/team_requirements.md) | Engineering team roles |
+| [GIT_RULES.md](GIT_RULES.md) | Git workflow and security policies |

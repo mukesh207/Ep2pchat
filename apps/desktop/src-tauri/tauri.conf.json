@@ -1,24 +1,24 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "desktop",
+  "productName": "Trustline",
   "version": "0.1.0",
-  "identifier": "in.encryptedchat.desktop",
+  "identifier": "app.trustline.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "./node_modules/.bin/vite",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "./node_modules/.bin/tsc && ./node_modules/.bin/vite build",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
-        "title": "desktop",
-        "width": 800,
-        "height": 600
+        "title": "Trustline",
+        "width": 1200,
+        "height": 800
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://localhost:3000 ws://localhost:3000 https://api.trustline.app wss://api.trustline.app; font-src 'self'"
     }
   },
   "bundle": {
