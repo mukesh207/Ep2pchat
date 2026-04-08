@@ -23,7 +23,7 @@ services:
 
   backend:
     build:
-      context: .
+      context: ..
       dockerfile: Dockerfile
     container_name: trustline-backend
     restart: unless-stopped
