@@ -106,7 +106,7 @@ pub async fn request_access(
 
         let org_id: Uuid = org_record.get("id");
 
-        sqlx::query("SET LOCAL app.current_org_id = $1")
+        sqlx::query("SELECT set_config('app.current_org_id', $1, true)")
             .bind(org_id.to_string())
             .execute(&mut *tx)
             .await?;
@@ -171,7 +171,7 @@ pub async fn register_passkey_begin(
             let email: String = row.get("email");
             let org_id: Uuid = row.get("org_id");
 
-            sqlx::query("SET LOCAL app.current_org_id = $1")
+            sqlx::query("SELECT set_config('app.current_org_id', $1, true)")
                 .bind(org_id.to_string())
                 .execute(&mut *tx)
                 .await?;
@@ -328,7 +328,7 @@ pub async fn login_begin(
             let user_id: Uuid = row.get("id");
             let org_id: Uuid = row.get("org_id");
 
-            sqlx::query("SET LOCAL app.current_org_id = $1")
+            sqlx::query("SELECT set_config('app.current_org_id', $1, true)")
                 .bind(org_id.to_string())
                 .execute(&mut *tx)
                 .await?;
