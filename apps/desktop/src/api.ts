@@ -1,4 +1,5 @@
 import { startRegistration, startAuthentication } from '@simplewebauthn/browser';
+import { invoke } from '@tauri-apps/api/core';
 
 function trimTrailingSlash(value: string) {
     return value.replace(/\/+$/, "");
@@ -56,7 +57,19 @@ export async function registerPasskey(userId: string) {
         body: JSON.stringify({ user_id: userId })
     });
 
-    const credential = await startRegistration({ optionsJSON: beginData.challenge });
+    let credential;
+    try {
+        credential = await startRegistration({ optionsJSON: beginData.challenge });
+    } catch (err: any) {
+        if (err.message.includes("not supported") || err.message.includes("undefined")) {
+            const b64Challenge = btoa(JSON.stringify(beginData.challenge));
+            const credStr = await invoke<string>("collect_passkey", { challenge_b64: b64Challenge, mode: "register" });
+            credential = JSON.parse(credStr);
+            if (credential.error) throw new Error(credential.error);
+        } else {
+            throw err;
+        }
+    }
 
     return requestJson('/auth/register-passkey/complete', {
         method: 'POST',
@@ -75,7 +88,19 @@ export async function loginPasskey(email: string) {
         body: JSON.stringify({ email })
     });
 
-    const credential = await startAuthentication({ optionsJSON: beginData.challenge });
+    let credential;
+    try {
+        credential = await startAuthentication({ optionsJSON: beginData.challenge });
+    } catch (err: any) {
+        if (err.message.includes("not supported") || err.message.includes("undefined")) {
+            const b64Challenge = btoa(JSON.stringify(beginData.challenge));
+            const credStr = await invoke<string>("collect_passkey", { challenge_b64: b64Challenge, mode: "login" });
+            credential = JSON.parse(credStr);
+            if (credential.error) throw new Error(credential.error);
+        } else {
+            throw err;
+        }
+    }
 
     return requestJson('/auth/login/complete', {
         method: 'POST',

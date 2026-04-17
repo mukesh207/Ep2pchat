@@ -81,21 +81,40 @@ export default function AuthFlow({
   };
 
   const handleRegisterPasskey = async () => {
-    if (!userId || !orgId) return; setError("");
+    if (!userId) return; setError("");
     try {
-      const keys = await crypto.generateKeys(); localKeys.current = keys;
+      // 1. Register WebAuthn Passkey
+      const regRes = await api.registerPasskey(userId);
+      if (regRes.error) throw new Error(regRes.error);
+
+      // 2. Login to get the active JWT and org_id
+      const loginRes = await api.loginPasskey(email);
+      if (loginRes.error) throw new Error(loginRes.error);
+      
+      api.setToken(loginRes.token);
+      setOrgId(loginRes.org_id);
+      setIsAdmin(Boolean((decodeJwtClaims(loginRes.token) as any)?.is_admin));
+      await invoke("set_session_jwt", { jwt: loginRes.token }).catch(() => {});
+
+      // 3. Generate and upload E2E keys using the authenticated session
+      const keys = await crypto.generateKeys(); 
+      localKeys.current = keys;
       try { await vault.saveLocalKeys(keys); } catch {}
+
       const uploadRes = await api.uploadKeys({
-        user_id: userId, org_id: orgId, device_name: "Desktop App",
-        identity_key: keys.identity_public, signed_pre_key: keys.signed_pre_key_public,
+        user_id: userId, 
+        org_id: loginRes.org_id, 
+        device_name: "Desktop App",
+        identity_key: keys.identity_public, 
+        signed_pre_key: keys.signed_pre_key_public,
         signed_pre_key_sig: keys.signed_pre_key_signature,
         one_time_pre_keys: keys.one_time_pre_keys.map((k: any) => ({ key_id: k.key_id, public_key: k.public_key })),
       });
       if (uploadRes.error) throw new Error(uploadRes.error);
+
       myDeviceId.current = uploadRes.device_id;
       try { await vault.saveDeviceId(uploadRes.device_id); } catch {}
-      const res = await api.registerPasskey(userId);
-      if (res.error) throw new Error(res.error);
+      
       startSession();
     } catch (err: any) { setError(err.message); }
   };

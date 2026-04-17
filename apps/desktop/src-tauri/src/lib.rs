@@ -496,6 +496,50 @@ pub struct OtpkPrivatePair {
     pub private_key: Vec<u8>,
 }
 
+#[tauri::command]
+fn collect_passkey(app: tauri::AppHandle, challenge_b64: String, mode: String) -> Result<String, String> {
+    use std::net::TcpListener;
+    use std::io::{Read, Write};
+    use tauri_plugin_opener::OpenerExt;
+
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+
+    let url = format!("http://localhost:1421/?bridge=true&mode={}&port={}&c={}", mode, port, challenge_b64);
+    let _ = app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string());
+
+    for stream in listener.incoming() {
+        if let Ok(mut stream) = stream {
+            let mut buf = [0; 8192];
+            if let Ok(bytes_read) = stream.read(&mut buf) {
+                let request = String::from_utf8_lossy(&buf[..bytes_read]);
+                
+                if request.starts_with("OPTIONS") {
+                    let response = "HTTP/1.1 200 OK\r\n\
+                                  Access-Control-Allow-Origin: *\r\n\
+                                  Access-Control-Allow-Methods: POST, OPTIONS\r\n\
+                                  Access-Control-Allow-Headers: Content-Type\r\n\
+                                  \r\n";
+                    let _ = stream.write_all(response.as_bytes());
+                    continue;
+                }
+
+                if let Some(body_idx) = request.find("\r\n\r\n") {
+                    let body = request[body_idx + 4..].trim_end_matches('\0');
+                    let response = "HTTP/1.1 200 OK\r\n\
+                                  Access-Control-Allow-Origin: *\r\n\
+                                  Content-Type: application/json\r\n\
+                                  \r\n\
+                                  {\"status\":\"ok\"}";
+                    let _ = stream.write_all(response.as_bytes());
+                    return Ok(body.to_string());
+                }
+            }
+        }
+    }
+    Err("Socket closed".into())
+}
+
 /// Check the server-side OTPK count and upload a fresh batch when below the
 /// replenishment threshold.  Designed to be called fire-and-forget from the
 /// frontend on login and after each outbound X3DH handshake.
@@ -623,6 +667,7 @@ pub fn run() {
             ratchet_decrypt,
             // OTPK replenishment
             check_and_replenish_otpks,
+            collect_passkey,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

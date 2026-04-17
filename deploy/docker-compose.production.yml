@@ -1,3 +1,10 @@
+# Trustline — Production Docker Compose
+# Domain: api.encryptedchat.in → AWS EC2 54.196.202.50
+# Traefik handles TLS via Let's Encrypt automatically.
+#
+# Usage (from the project root on EC2):
+#   docker compose --env-file deploy/.env.production -f deploy/docker-compose.production.yml up -d --build
+
 services:
   traefik:
     image: traefik:v2.11
@@ -37,6 +44,9 @@ services:
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       NATS_URL: nats://nats:4222
+      # TEST_MODE enabled /api/v1/test/bootstrap for seeding demo users.
+      # It is now set to false for production to secure the backend.
+      TEST_MODE: "false"
     depends_on:
       postgres:
         condition: service_healthy
