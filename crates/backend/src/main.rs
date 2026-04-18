@@ -106,6 +106,34 @@ async fn async_main() {
 
     tracing::info!("✅ Database migrations applied");
 
+    // ── Admin Organization Setup ────────────────────────────────────────
+    if let Ok(admin_email) = std::env::var("ADMIN_EMAIL") {
+        let admin_email = admin_email.trim().to_lowercase();
+        if let Some((_, domain_part)) = admin_email.split_once('@') {
+            if !domain_part.is_empty() {
+                tracing::info!("⚙️ Seeding admin user from ADMIN_EMAIL: {}", admin_email);
+                let seed_res = sqlx::query(
+                    r#"WITH new_org AS (
+                        INSERT INTO organizations (domain, name) VALUES ($1, $1)
+                        ON CONFLICT (domain) DO UPDATE SET domain=EXCLUDED.domain RETURNING id
+                    )
+                    INSERT INTO users (org_id, email, status, is_admin)
+                    SELECT id, $2, 'active', true FROM new_org
+                    ON CONFLICT (org_id, email) DO UPDATE SET status='active', is_admin=true;"#
+                )
+                .bind(domain_part)
+                .bind(&admin_email)
+                .execute(&pool)
+                .await;
+
+                match seed_res {
+                    Ok(_) => tracing::info!("✅ Admin user successfully bootstrapped via config"),
+                    Err(e) => tracing::error!("❌ Failed to bootstrap admin user: {}", e),
+                }
+            }
+        }
+    }
+
     // ── NATS JetStream ──────────────────────────────────────────────────
     let nats_url = env_or_local_default("NATS_URL", "nats://localhost:4222");
 
