@@ -41,6 +41,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libsodium-dev
 
+      - name: Install Windows dependencies (libsodium via vcpkg)
+        if: matrix.platform == 'windows-latest'
+        run: |
+          vcpkg install libsodium:x64-windows
+          echo "SODIUM_LIB_DIR=C:\vcpkg\installed\x64-windows\lib" >> $env:GITHUB_ENV
+          echo "SODIUM_INCLUDE_DIR=C:\vcpkg\installed\x64-windows\include" >> $env:GITHUB_ENV
+          echo "SODIUM_STATIC=1" >> $env:GITHUB_ENV
+
       - name: Install frontend dependencies
         working-directory: apps/desktop
         run: npm install
