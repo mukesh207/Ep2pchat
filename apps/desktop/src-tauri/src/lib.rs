@@ -497,20 +497,41 @@ pub struct OtpkPrivatePair {
 }
 
 #[tauri::command]
-fn collect_passkey(app: tauri::AppHandle, challenge_b64: String, mode: String) -> Result<String, String> {
+fn collect_passkey(_app: tauri::AppHandle, challenge_b64: String, mode: String) -> Result<String, String> {
     use std::net::TcpListener;
     use std::io::{Read, Write};
-    use tauri_plugin_opener::OpenerExt;
+    use std::time::Duration;
 
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
 
-    let url = format!("http://localhost:1421/?bridge=true&mode={}&port={}&c={}", mode, port, challenge_b64);
-    let _ = app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string());
+    // Set a 60-second timeout so the app doesn't hang forever
+    listener.set_nonblocking(false).ok();
+    let _ = listener.set_ttl(60);
+
+    let url = format!("http://localhost:1420/passkey-bridge.html?bridge=true&mode={}&port={}&c={}", mode, port, challenge_b64);
+    eprintln!("[collect_passkey] Opening browser at: {}", &url[..url.len().min(120)]);
+
+    // Use xdg-open directly on Linux to open the default browser
+    let open_result = std::process::Command::new("xdg-open")
+        .arg(&url)
+        .spawn();
+
+    match &open_result {
+        Ok(_) => eprintln!("[collect_passkey] Browser opened successfully, waiting for passkey..."),
+        Err(e) => {
+            eprintln!("[collect_passkey] Failed to open browser: {}", e);
+            return Err(format!("Failed to open browser: {}", e));
+        }
+    }
+
+    // Set a read timeout so we don't block forever
+    listener.set_nonblocking(false).ok();
 
     for stream in listener.incoming() {
         if let Ok(mut stream) = stream {
-            let mut buf = [0; 8192];
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
+            let mut buf = [0; 16384];
             if let Ok(bytes_read) = stream.read(&mut buf) {
                 let request = String::from_utf8_lossy(&buf[..bytes_read]);
                 
@@ -526,6 +547,7 @@ fn collect_passkey(app: tauri::AppHandle, challenge_b64: String, mode: String) -
 
                 if let Some(body_idx) = request.find("\r\n\r\n") {
                     let body = request[body_idx + 4..].trim_end_matches('\0');
+                    eprintln!("[collect_passkey] Received credential from browser ({} bytes)", body.len());
                     let response = "HTTP/1.1 200 OK\r\n\
                                   Access-Control-Allow-Origin: *\r\n\
                                   Content-Type: application/json\r\n\
@@ -537,7 +559,7 @@ fn collect_passkey(app: tauri::AppHandle, challenge_b64: String, mode: String) -
             }
         }
     }
-    Err("Socket closed".into())
+    Err("Socket closed without receiving passkey data".into())
 }
 
 /// Check the server-side OTPK count and upload a fresh batch when below the

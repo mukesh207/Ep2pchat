@@ -18,7 +18,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://localhost:3000 ws://localhost:3000 https://api.trustline.app wss://api.trustline.app; font-src 'self'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://localhost:3000 ws://localhost:3000 https://api.encryptedchat.in wss://api.encryptedchat.in https://api.trustline.app wss://api.trustline.app; font-src 'self'"
     }
   },
   "bundle": {

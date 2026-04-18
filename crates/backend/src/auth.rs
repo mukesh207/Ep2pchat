@@ -72,6 +72,81 @@ pub fn router() -> Router<AppState> {
         )
         .route("/login/begin", post(login_begin))
         .route("/login/complete", post(login_complete))
+        .route("/admin-bootstrap", post(admin_bootstrap))
+}
+
+/// One-time admin bootstrap endpoint.
+/// Issues a JWT directly for the admin email configured via ADMIN_EMAIL env var.
+/// This bypasses WebAuthn for initial admin setup on platforms where WebAuthn
+/// is not available (e.g., Linux Tauri desktop).
+async fn admin_bootstrap(
+    State(state): State<AppState>,
+    Json(payload): Json<RequestAccessPayload>,
+) -> Json<Value> {
+    let email = payload.email.trim().to_lowercase();
+
+    // Only allow the configured admin email
+    let admin_email = std::env::var("ADMIN_EMAIL")
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase();
+
+    if admin_email.is_empty() || email != admin_email {
+        return Json(json!({"error": "Admin bootstrap is not available for this email"}));
+    }
+
+    // Look up the admin user
+    let row = sqlx::query(
+        "SELECT u.id, u.org_id, u.is_admin, u.status FROM users u WHERE u.email = $1"
+    )
+    .bind(&email)
+    .fetch_optional(&state.db)
+    .await;
+
+    let row = match row {
+        Ok(Some(r)) => r,
+        Ok(None) => return Json(json!({"error": "Admin user not found. Restart the backend to seed."})),
+        Err(e) => return Json(json!({"error": format!("Database error: {}", e)})),
+    };
+
+    let user_id: Uuid = row.get("id");
+    let org_id: Uuid = row.get("org_id");
+    let is_admin: bool = row.get("is_admin");
+    let status: String = row.get("status");
+
+    if status != "active" || !is_admin {
+        return Json(json!({"error": "User is not an active admin"}));
+    }
+
+    let expiration = chrono::Utc::now()
+        .checked_add_signed(chrono::Duration::hours(24))
+        .expect("valid timestamp")
+        .timestamp() as usize;
+
+    let claims = Claims {
+        sub: user_id,
+        org_id,
+        is_admin: true,
+        exp: expiration,
+    };
+
+    let token = match encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(state.jwt_secret.as_bytes()),
+    ) {
+        Ok(t) => t,
+        Err(e) => return Json(json!({"error": format!("Failed to create token: {}", e)})),
+    };
+
+    tracing::info!("✅ Admin bootstrap: issued JWT for {}", email);
+    Json(json!({
+        "status": "success",
+        "token": token,
+        "user_id": user_id,
+        "org_id": org_id,
+        "is_admin": true
+    }))
 }
 
 #[derive(Deserialize)]

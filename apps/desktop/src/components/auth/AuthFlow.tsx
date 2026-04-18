@@ -81,11 +81,62 @@ export default function AuthFlow({
   const handleRegisterPasskey = async () => {
     if (!userId) return; setError("");
     try {
-      // 1. Register WebAuthn Passkey
+      // Try admin bootstrap first (bypasses WebAuthn for configured admin)
+      let bootstrapToken: string | null = null;
+      let bootstrapOrgId: string | null = null;
+      try {
+        const bootstrapRes = await api.adminBootstrap(email);
+        if (bootstrapRes.token) {
+          bootstrapToken = bootstrapRes.token;
+          bootstrapOrgId = bootstrapRes.org_id;
+        }
+      } catch {
+        // Not the admin or bootstrap not available — continue with normal flow
+      }
+
+      if (bootstrapToken && bootstrapOrgId) {
+        // Admin bootstrap succeeded — skip WebAuthn entirely
+        api.setToken(bootstrapToken);
+        setOrgId(bootstrapOrgId);
+        setIsAdmin(true);
+        await invoke("set_session_jwt", { jwt: bootstrapToken }).catch(() => {});
+
+        // Generate and upload E2E keys
+        const keys = await crypto.generateKeys(); 
+        localKeys.current = keys;
+        try { 
+          await vault.saveLocalKeys(keys); 
+          const otpkPairs = keys.one_time_pre_keys.map((k: any) => ({
+            key_id: k.key_id.toString(),
+            private_key: Array.from(Uint8Array.from(atob(k.secret_key), c => c.charCodeAt(0)))
+          }));
+          await vault.storeOtpkBatch(otpkPairs);
+        } catch (err) {
+          console.error("Local vault save failed", err);
+        }
+
+        const uploadRes = await api.uploadKeys({
+          user_id: userId, 
+          org_id: bootstrapOrgId, 
+          device_name: "Desktop App",
+          identity_key: keys.identity_public, 
+          signed_pre_key: keys.signed_pre_key_public,
+          signed_pre_key_sig: keys.signed_pre_key_signature,
+          one_time_pre_keys: keys.one_time_pre_keys.map((k: any) => ({ key_id: k.key_id, public_key: k.public_key })),
+        });
+        if (uploadRes.error) throw new Error(uploadRes.error);
+
+        myDeviceId.current = uploadRes.device_id;
+        try { await vault.saveDeviceId(uploadRes.device_id); } catch {}
+        
+        startSession();
+        return;
+      }
+
+      // Normal WebAuthn flow for non-admin users
       const regRes = await api.registerPasskey(userId);
       if (regRes.error) throw new Error(regRes.error);
 
-      // 2. Login to get the active JWT and org_id
       const loginRes = await api.loginPasskey(email);
       if (loginRes.error) throw new Error(loginRes.error);
       
@@ -94,7 +145,6 @@ export default function AuthFlow({
       setIsAdmin(Boolean((decodeJwtClaims(loginRes.token) as any)?.is_admin));
       await invoke("set_session_jwt", { jwt: loginRes.token }).catch(() => {});
 
-      // 3. Generate and upload E2E keys using the authenticated session
       const keys = await crypto.generateKeys(); 
       localKeys.current = keys;
       try { 

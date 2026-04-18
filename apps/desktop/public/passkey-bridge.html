@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Trustline — Passkey Setup</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+      background: #0a0c10;
+      color: #e0e0e0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    .card {
+      background: rgba(16, 20, 30, 0.95);
+      border: 1px solid rgba(240, 165, 0, 0.2);
+      border-radius: 12px;
+      padding: 40px;
+      max-width: 440px;
+      width: 90%;
+      text-align: center;
+    }
+    .card h1 {
+      font-size: 18px;
+      color: #f0a500;
+      margin-bottom: 8px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+    }
+    .card p {
+      font-size: 13px;
+      color: #999;
+      line-height: 1.6;
+      margin-bottom: 24px;
+    }
+    #status {
+      font-size: 14px;
+      padding: 14px;
+      border-radius: 8px;
+      margin-top: 16px;
+    }
+    .status-working {
+      background: rgba(240, 165, 0, 0.1);
+      border: 1px solid rgba(240, 165, 0, 0.3);
+      color: #f0a500;
+    }
+    .status-success {
+      background: rgba(0, 200, 120, 0.1);
+      border: 1px solid rgba(0, 200, 120, 0.3);
+      color: #00c878;
+    }
+    .status-error {
+      background: rgba(220, 50, 50, 0.1);
+      border: 1px solid rgba(220, 50, 50, 0.3);
+      color: #dc3232;
+    }
+    .spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(240, 165, 0, 0.3);
+      border-top-color: #f0a500;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      vertical-align: middle;
+      margin-right: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Trustline</h1>
+    <p>Your browser will now prompt you to register or verify your Passkey.<br/>
+       Follow the system dialog to complete authentication.</p>
+    <div id="status" class="status-working">
+      <span class="spinner"></span> Initializing Passkey ceremony…
+    </div>
+  </div>
+
+  <script type="module">
+    import { startRegistration, startAuthentication } from 'https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@11/dist/bundle/index.min.js';
+
+    const params = new URLSearchParams(window.location.search);
+    const mode       = params.get('mode') || 'register';
+    const port       = params.get('port');
+    const challengeB = params.get('c');
+    const statusEl   = document.getElementById('status');
+
+    function setStatus(msg, cls) {
+      statusEl.className = cls;
+      statusEl.innerHTML = msg;
+    }
+
+    async function run() {
+      if (!port || !challengeB) {
+        setStatus('❌ Missing parameters. Close this tab and try again.', 'status-error');
+        return;
+      }
+
+      let challenge;
+      try {
+        challenge = JSON.parse(atob(challengeB));
+      } catch {
+        setStatus('❌ Invalid challenge data.', 'status-error');
+        return;
+      }
+
+      setStatus('<span class="spinner"></span> Please complete the Passkey prompt…', 'status-working');
+
+      let credential;
+      try {
+        if (mode === 'register') {
+          credential = await startRegistration({ optionsJSON: challenge });
+        } else {
+          credential = await startAuthentication({ optionsJSON: challenge });
+        }
+      } catch (err) {
+        setStatus('❌ Passkey ceremony failed: ' + err.message, 'status-error');
+        return;
+      }
+
+      try {
+        await fetch(`http://127.0.0.1:${port}/`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(credential),
+        });
+        setStatus('✅ Passkey registered! You can close this tab and return to Trustline.', 'status-success');
+      } catch (err) {
+        setStatus('❌ Could not send credential back to app: ' + err.message, 'status-error');
+      }
+    }
+
+    run();
+  </script>
+</body>
+</html>
