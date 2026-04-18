@@ -20,28 +20,8 @@ function AdminPanel({ onBack }: { onBack: () => void }) {
       if (tab === "LOGS")     { const r = await api.getAuditLogs();   setData(r.logs  || []); }
       if (tab === "SETTINGS") setData([]);
     } catch (err: any) {
-      setPanelError("Running without backend connection: Showing simulated admin data.");
-      if (tab === "PENDING") {
-        setData([
-          { id: "demo-p1", email: "newhire@trustline.io", username: "alex", access_code: "ALX-9021" },
-          { id: "demo-p2", email: "contractor@corp.com", username: "frank", access_code: "FRK-4421" },
-          { id: "demo-p3", email: "auditor@external.com", username: "olivia", access_code: "OLI-7733" }
-        ]);
-      } else if (tab === "USERS") {
-        setData([
-          { id: "1", email: "alice@blacksite.io", username: "alice", status: "active", device_count: 2 },
-          { id: "2", email: "charlie@blacksite.io", username: "charlie", status: "active", device_count: 1 },
-          { id: "3", email: "ops-admin@nexacore.dev", username: "ops-admin", status: "active", device_count: 3 },
-          { id: "4", email: "sec@archivist.net", username: "archivist", status: "suspended", device_count: 0 },
-        ]);
-      } else if (tab === "LOGS") {
-        setData([
-          { id: "demo-l1", action: "DEVICE_REVOKED", actor_email: "ops-admin@nexacore.dev", created_at: new Date(Date.now() - 3600000).toISOString(), details: { device_id: "d-888" } },
-          { id: "demo-l2", action: "USER_APPROVED", actor_email: "ops-admin@nexacore.dev", created_at: new Date().toISOString(), details: { user_id: "demo-p1" } },
-        ]);
-      } else {
-        setData([]);
-      }
+      setPanelError(err.message || "Running without backend connection. Cannot fetch admin data.");
+      setData([]);
     }
   };
 

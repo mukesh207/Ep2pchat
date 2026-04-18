@@ -31,6 +31,5 @@ We commit to a **48-hour** response time for all security reports submitted to t
 ## Exclusions
 
 The following are out of scope:
-- Demo mode (`TEST_MODE`) endpoints
 - UI-only issues that don't affect data security
 - Denial of service against development infrastructure

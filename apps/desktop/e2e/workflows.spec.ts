@@ -152,8 +152,11 @@ test.describe("Frontend + Backend workflows", () => {
     await expect(page.locator("#contact-search")).toBeVisible();
     await expect(page.locator(".contact-item")).toHaveCount(3);
 
-    await page.click("#my-devices-btn");
-    await expect(page.locator(".admin-detail-header")).toContainText("My Devices");
+    await page.click("#admin-btn");
+    await page.click("#admin-nav-users");
+    await page.click(`#info-${fixture.alice.user_id}`);
+    await expect(page.locator(".admin-detail-header")).toContainText("alice");
+    // "Alice Desktop" is what we mocked as the device name in backend tests
     await expect(page.locator(".admin-detail-body")).toContainText("Alice Desktop");
   });
 

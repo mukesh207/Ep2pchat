@@ -10,7 +10,6 @@ type View = "HOME" | "WAITING" | "REGISTER";
 export default function AuthFlow({
   onAuthenticated,
   onAdminAccess,
-  onDemoMode,
 }: {
   onAuthenticated: (
     userId: string,
@@ -20,7 +19,6 @@ export default function AuthFlow({
     isAdmin: boolean,
   ) => void;
   onAdminAccess: () => void;
-  onDemoMode: () => void;
 }) {
   const [view, setView] = useState<View>("HOME");
   const [email, setEmail] = useState("");
@@ -99,7 +97,16 @@ export default function AuthFlow({
       // 3. Generate and upload E2E keys using the authenticated session
       const keys = await crypto.generateKeys(); 
       localKeys.current = keys;
-      try { await vault.saveLocalKeys(keys); } catch {}
+      try { 
+        await vault.saveLocalKeys(keys); 
+        const otpkPairs = keys.one_time_pre_keys.map((k: any) => ({
+          key_id: k.key_id.toString(),
+          private_key: Array.from(Uint8Array.from(atob(k.secret_key), c => c.charCodeAt(0)))
+        }));
+        await vault.storeOtpkBatch(otpkPairs);
+      } catch (err) {
+        console.error("Local vault save failed", err);
+      }
 
       const uploadRes = await api.uploadKeys({
         user_id: userId, 
@@ -154,7 +161,6 @@ export default function AuthFlow({
       onBack={() => setView("HOME")}
       onCheckApproval={checkApproval}
       onAdminAccess={onAdminAccess}
-      onDemoMode={onDemoMode}
     />
   );
 }

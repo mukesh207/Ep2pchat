@@ -20,11 +20,8 @@ The frontend has been completely redesigned from the ground up to match the requ
     *   `StatusTicker.tsx`: A top-bar scrolling marquee that cycles through security validations continuously.
     *   `EncryptionSpinner.tsx`: A complex SVG orbital animation mapping the exact phases of the X3DH key exchange algorithm during the initial handshake.
 
-## Demo Mode Added
-To verify all UI states without needing a Postgres/Axum backend running, a **"DEMO MODE"** was built into the client. By clicking the teal "Demo Mode" button on the onboarding screen, you can browse mock contacts, view the HUD stats strip, trigger the encryption handshake sequence, and send messages that auto-reply to simulate E2EE transmission.
-
 ## Screenshots Verified
-The internal browser subagent successfully loaded the app in Vite, executed the Demo Mode lifecycle, and verified that all fonts, CSS variables, svgs, and complex layout structures loaded perfectly.
+The internal browser subagent successfully loaded the app in Vite, and verified that all fonts, CSS variables, svgs, and complex layout structures loaded perfectly.
 
 ````carousel
 ![Onboarding Screen](/home/st4rk/.gemini/antigravity/brain/a0da5252-5180-4d06-b27f-127f6d10cf50/onboarding_screen_verification_1773563643834.png)
@@ -47,4 +44,4 @@ With the visual layer fully compliant with the `UIreferences` goals, the next lo
 I recommend we follow these steps to proceed:
 1.  **Bring up the Rust workspace**: Compile the `server` package containing the Axum API and WebSocket relay.
 2.  **Initialize the Database**: Start the Postgres container (if not already running) and run existing setup migrations.
-3.  **Client-Server Handshake Validation**: Disable the UI's demo mode and trace the FIDO2/Passkey registration flow and WebSocket connection to verify the cryptographic functions (`vault.ts`, `crypto.ts`, `libsodium`) are operating synchronously with the UI correctly.
+3.  **Client-Server Handshake Validation**: Trace the FIDO2/Passkey registration flow and WebSocket connection to verify the cryptographic functions (`vault.ts`, `crypto.ts`, `libsodium`) are operating synchronously with the UI correctly.

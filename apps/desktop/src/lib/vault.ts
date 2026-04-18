@@ -22,7 +22,7 @@ async function getVaultSecret(): Promise<string> {
 // Derive a unique local encryption key per installation instead of using static constants.
 async function deriveVaultKey() {
     const secret = await getVaultSecret();
-    const secretBytes = base64ToBuffer(secret);
+    const secretBytes = hexToBuffer(secret);
     return await crypto.subtle.importKey(
         "raw",
         secretBytes,
@@ -30,6 +30,14 @@ async function deriveVaultKey() {
         false,
         ["encrypt", "decrypt"]
     );
+}
+
+function hexToBuffer(hex: string) {
+    const buf = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < hex.length; i += 2) {
+        buf[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+    }
+    return buf;
 }
 
 function bufferToBase64(buf: Uint8Array) {

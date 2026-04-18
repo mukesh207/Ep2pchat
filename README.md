@@ -111,16 +111,6 @@ npm install
 npm run tauri dev
 ```
 
-## Demo Mode
-
-Run the one-click demo launcher to spin up a fully seeded environment:
-
-```bash
-./demo.sh
-```
-
-This starts the backend in `TEST_MODE` with pre-configured test users and organizations.
-
 ## Testing
 
 ```bash

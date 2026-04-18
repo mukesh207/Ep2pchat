@@ -19,48 +19,6 @@ import AdminView from "./features/admin/AdminView";
 import type { Contact, Message, RootView, SessionState, LocalKeys } from "./types";
 import "./App.css";
 
-const SHOW_DEV_TOOLS = import.meta.env.DEV;
-
-const DEMO_CONTACTS: Contact[] = [
-  {
-    id: "1",
-    username: "alice",
-    email: "alice@blacksite.io",
-    status: "active",
-    device_count: 1,
-    devices: [{ device_id: "demo-device-1", identity_key: "", signed_pre_key: "", signed_pre_key_signature: "", one_time_pre_key: null }],
-  },
-  {
-    id: "2",
-    username: "charlie",
-    email: "charlie@blacksite.io",
-    status: "active",
-    device_count: 1,
-    devices: [{ device_id: "demo-device-2", identity_key: "", signed_pre_key: "", signed_pre_key_signature: "", one_time_pre_key: null }],
-  },
-];
-
-const DEMO_MESSAGES: Record<string, Message[]> = {
-  "1": [
-    {
-      id: "m1",
-      sender: "them",
-      text: "Authentication layer is live. X3DH confirmed on all nodes.",
-      timestamp: new Date(Date.now() - 8 * 60000).toISOString(),
-      is_me: false,
-      status: "received",
-    },
-    {
-      id: "m2",
-      sender: "me",
-      text: "Acknowledged. RLS policies enforced.",
-      timestamp: new Date(Date.now() - 6 * 60000).toISOString(),
-      is_me: true,
-      status: "read",
-    },
-  ],
-};
-
 function getDisplayName(contact: Contact) {
   return contact.username || contact.email;
 }
@@ -72,7 +30,6 @@ function getInitials(value: string) {
 export default function App() {
   const [rootView, setRootView] = useState<RootView>("AUTH");
   const [session, setSession] = useState<SessionState | null>(null);
-  const [isDemo, setIsDemo] = useState(false);
   const [workspaceError, setWorkspaceError] = useState("");
 
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -117,7 +74,6 @@ export default function App() {
     setContacts([]);
     setActiveContact(null);
     setMessages([]);
-    setIsDemo(false);
   };
 
   useEffect(() => {
@@ -138,6 +94,19 @@ export default function App() {
         handleDeviceRevoked(msg.payload);
       }
     });
+
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("e2e_token");
+    if (token) api.setToken(token);
+    
+    if (params.get("e2e_autologin") === "true") {
+      const e2eUserId = params.get("e2e_user_id");
+      const e2eOrgId = params.get("e2e_org_id");
+      const e2eDeviceId = params.get("e2e_device_id");
+      if (e2eUserId && e2eOrgId && e2eDeviceId && token) {
+        setTimeout(() => handleAuthenticated(e2eUserId, e2eOrgId, e2eDeviceId, {} as LocalKeys, true), 100);
+      }
+    }
   }, []);
 
   const loadWorkspace = async (userId: string) => {
@@ -165,7 +134,6 @@ export default function App() {
   ) => {
     void (async () => {
       setWorkspaceError("");
-      setIsDemo(false);
       setSession({ userId, orgId, isAdmin });
       localKeys.current = keys;
       myDeviceId.current = deviceId;
@@ -199,7 +167,6 @@ export default function App() {
     setUnreadByContact({});
     setLastMessageByContact({});
     setTypingByContact({});
-    setIsDemo(false);
     setRootView("AUTH");
   };
 
@@ -207,14 +174,6 @@ export default function App() {
     setIsHandshaking(true);
     setActiveContact(contact);
     setUnreadByContact((prev) => ({ ...prev, [contact.id]: 0 }));
-
-    if (isDemo) {
-      setTimeout(() => {
-        setMessages(DEMO_MESSAGES[contact.id] || []);
-        setIsHandshaking(false);
-      }, 300);
-      return;
-    }
 
     try {
       const history = (await vault.getMessages(contact.id)) as any[];
@@ -258,21 +217,6 @@ export default function App() {
         <AuthFlow
           onAuthenticated={handleAuthenticated}
           onAdminAccess={() => setRootView("ADMIN")}
-          onDemoMode={() => {
-            setWorkspaceError("");
-            setIsDemo(true);
-            setSession({ userId: "demo-user", orgId: "demo-org", isAdmin: true });
-            localKeys.current = {
-              identity_public: "",
-              identity_secret: "",
-              signed_pre_key_public: "",
-              signed_pre_key_secret: "",
-              signed_pre_key_signature: "",
-            };
-            myDeviceId.current = "demo-device";
-            setContacts(DEMO_CONTACTS);
-            setRootView("CHAT");
-          }}
         />
       </>
     );
@@ -295,7 +239,6 @@ export default function App() {
         <div className="top-bar-logo">
           <Shield size={16} strokeWidth={1.5} /> TRUSTLINE
           <span className="top-bar-version">Desktop</span>
-          {isDemo && SHOW_DEV_TOOLS && <span className="top-bar-badge">Sample Workspace</span>}
         </div>
 
         <div className="top-bar-meta">
@@ -306,7 +249,7 @@ export default function App() {
             <Users size={10} /> {contacts.length} contacts
           </div>
           {session?.isAdmin ? (
-            <button className="btn btn-ghost btn-sm" onClick={() => setRootView("ADMIN")}>
+            <button id="admin-btn" className="btn btn-ghost btn-sm" onClick={() => setRootView("ADMIN")}>
               <ShieldOff size={12} /> Admin
             </button>
           ) : null}
@@ -377,7 +320,6 @@ export default function App() {
           setMessages={setMessages}
           workspaceName="Secure Workspace"
           typingByContact={typingByContact}
-          isDemo={isDemo}
           localKeys={localKeys}
           userId={session?.userId || null}
           setLastMessageByContact={setLastMessageByContact}

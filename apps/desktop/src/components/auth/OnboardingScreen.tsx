@@ -1,7 +1,5 @@
-import { Shield, ShieldOff, Eye, Lock, Zap, Key, AlertTriangle, User, RefreshCw, CheckCircle } from "lucide-react";
+import { Shield, ShieldOff, Lock, Zap, Key, AlertTriangle, User, RefreshCw, CheckCircle } from "lucide-react";
 import { ShaderAnimation } from "../ui/shader-lines";
-
-const SHOW_DEV_TOOLS = import.meta.env.DEV;
 
 type OnboardingProps = {
   view: "HOME" | "WAITING" | "REGISTER";
@@ -15,12 +13,11 @@ type OnboardingProps = {
   onBack: () => void;
   onCheckApproval: () => void;
   onAdminAccess: () => void;
-  onDemoMode: () => void;
 };
 
 function OnboardingScreen({
   view, email, error, accessCode, isCheckingApproval,
-  onEmailChange, onSubmit, onRegister, onBack, onCheckApproval, onAdminAccess, onDemoMode
+  onEmailChange, onSubmit, onRegister, onBack, onCheckApproval, onAdminAccess
 }: OnboardingProps) {
 
 
@@ -102,20 +99,6 @@ function OnboardingScreen({
             >
               <ShieldOff size={13} /> Admin Console
             </button>
-
-            {SHOW_DEV_TOOLS && (
-              <>
-                <div className="onboarding-divider"><span>Developer tools</span></div>
-                <button
-                  id="demo-btn"
-                  type="button"
-                  className="btn btn-ghost btn-full"
-                  onClick={onDemoMode}
-                >
-                  <Eye size={13} /> Sample Workspace
-                </button>
-              </>
-            )}
 
             <div className="security-badges">
               {[

@@ -13,7 +13,6 @@ export default function ChatArena({
   setMessages,
   workspaceName,
   typingByContact,
-  isDemo,
   localKeys,
   setLastMessageByContact,
   showContactDetail
@@ -34,19 +33,6 @@ export default function ChatArena({
       id: `msg-${Date.now()}`, sender: "me", text: inputText,
       timestamp: new Date().toISOString(), is_me: true, status: "sending",
     };
-
-    if (isDemo) {
-      setMessages((prev: any) => [...prev, myMsg]);
-      setInputText("");
-      setTimeout(() => {
-        setMessages((prev: any) => [...prev, {
-          id: `reply-${Date.now()}`, sender: "them",
-          text: "Acknowledged. End-to-end encryption maintained.",
-          timestamp: new Date().toISOString(), is_me: false,
-        }]);
-      }, 900);
-      return;
-    }
 
     if (!localKeys.current) return;
     const targetDevice = activeContact.devices?.[0];
@@ -78,6 +64,7 @@ export default function ChatArena({
         recipient_device_id: targetDevice.device_id,
         ciphertext: result.ciphertext,
         ephemeral_public_key: ephemeralPk ?? null,
+        used_opk_id: targetDevice.one_time_pre_key?.key_id ?? null,
         header: result.header,
       });
 
@@ -237,7 +224,7 @@ export default function ChatArena({
                     const nextValue = e.target.value;
                     setInputText(nextValue);
                     const activeDevice = activeContact?.devices?.[0];
-                    if (!isDemo && activeDevice) {
+                    if (activeDevice) {
                       socket.send("TYPING_EVENT", {
                         recipient_device_id: activeDevice.device_id,
                         is_typing: nextValue.trim().length > 0,

@@ -39,13 +39,6 @@ pub fn get_or_create_vault_key(_app: tauri::AppHandle) -> Result<String, String>
                         || err_str.contains("org.freedesktop.secrets")
                         || err_str.contains("could not connect");
 
-                    if daemon_missing && std::env::var("TRUSTLINE_DEMO_MODE").is_ok() {
-                        let machine_id = std::fs::read_to_string("/etc/machine-id")
-                            .unwrap_or_else(|_| "demo-fallback".into());
-                        let raw =
-                            sodiumoxide::crypto::hash::sha256::hash(machine_id.trim().as_bytes());
-                        return Ok(hex::encode(raw.0));
-                    }
                     return Err(format!("Secret service unavailable: {}", keyring_error));
                 }
                 #[cfg(not(target_os = "linux"))]

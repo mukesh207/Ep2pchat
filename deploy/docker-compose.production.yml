@@ -44,9 +44,6 @@ services:
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       NATS_URL: nats://nats:4222
-      # TEST_MODE enabled /api/v1/test/bootstrap for seeding demo users.
-      # It is now set to false for production to secure the backend.
-      TEST_MODE: "false"
     depends_on:
       postgres:
         condition: service_healthy
