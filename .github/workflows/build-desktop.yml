@@ -4,7 +4,7 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch:
 
 jobs:
   build:
@@ -61,13 +61,25 @@ jobs:
           projectPath: apps/desktop
           tauriScript: npx tauri
 
-      - name: Upload artifacts
+      - name: Upload Windows artifacts
+        if: matrix.platform == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: trustline-${{ matrix.platform }}
+          name: Trustline-Windows
+          path: target/release/bundle/msi/*.msi
+
+      - name: Upload Linux artifacts
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Trustline-Linux
           path: |
-            target/release/bundle/**/*.msi
-            target/release/bundle/**/*.deb
-            target/release/bundle/**/*.rpm
-            target/release/bundle/**/*.dmg
-            target/release/bundle/**/*.AppImage
+            target/release/bundle/deb/*.deb
+            target/release/bundle/rpm/*.rpm
+
+      - name: Upload macOS artifacts
+        if: matrix.platform == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Trustline-macOS
+          path: target/release/bundle/dmg/*.dmg
