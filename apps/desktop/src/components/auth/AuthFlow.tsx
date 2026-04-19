@@ -4,12 +4,12 @@ import * as api from "../../api";
 import * as crypto from "../../lib/crypto";
 import * as vault from "../../lib/vault";
 import OnboardingScreen from "./OnboardingScreen";
+import { useToast } from "../ui/Toast";
 
-type View = "HOME" | "WAITING" | "REGISTER";
+type View = "HOME" | "WAITING" | "REGISTER" | "LOADING";
 
 export default function AuthFlow({
   onAuthenticated,
-  onAdminAccess,
 }: {
   onAuthenticated: (
     userId: string,
@@ -18,16 +18,15 @@ export default function AuthFlow({
     localKeys: any,
     isAdmin: boolean,
   ) => void;
-  onAdminAccess: () => void;
 }) {
+  const { addToast } = useToast();
   const [view, setView] = useState<View>("HOME");
   const [email, setEmail] = useState("");
   const [userId, setUserId] = useState("");
-  const [orgId, setOrgId] = useState("");
+
   const [accessCode, setAccessCode] = useState("");
   const [isCheckingApproval, setIsCheckingApproval] = useState(false);
-  const [error, setError] = useState("");
-  const [isAdmin, setIsAdmin] = useState(false);
+
   const localKeys = useRef<any>(null);
   const myDeviceId = useRef<string | null>(null);
 
@@ -44,16 +43,30 @@ export default function AuthFlow({
   };
 
   const handleRequestAccess = async (e: React.FormEvent) => {
-    e.preventDefault(); setError("");
+    e.preventDefault();
     try {
       const res = await api.requestAccess(email);
       if (res.error) throw new Error(res.error);
       setUserId(res.user_id);
       setAccessCode(res.access_code || "");
-      if (res.status === "active") await handleLogin(email, res.user_id);
-      else setView("WAITING");
+      if (res.status === "active") {
+        // Try admin bootstrap first — skip passkey entirely
+        try {
+          const bootstrapRes = await api.adminBootstrap(email);
+          if (bootstrapRes.token) {
+            setView("LOADING");
+            await completeSetup(bootstrapRes.token, res.user_id, bootstrapRes.org_id, true);
+            return;
+          }
+        } catch {
+          // Not the configured admin — continue with passkey login
+        }
+        await handleLogin(email, res.user_id);
+      } else {
+        setView("WAITING");
+      }
     } catch (err: any) {
-      setError(err.message || "We couldn't reach your workspace. Check the server connection and API base URL.");
+      addToast(err.message || "We couldn't reach your workspace. Check the server connection and API base URL.", "error");
     }
   };
 
@@ -61,76 +74,76 @@ export default function AuthFlow({
     try {
       const res = await api.loginPasskey(loginEmail);
       if (res.error) throw new Error(res.error);
-      api.setToken(res.token); setUserId(uid); setOrgId(res.org_id);
+      api.setToken(res.token); setUserId(uid);
       await invoke("set_session_jwt", { jwt: res.token }).catch(() => {});
-      const claims = decodeJwtClaims(res.token);
-      setIsAdmin(Boolean((claims as any)?.is_admin));
       
       const savedKeys = await vault.getLocalKeys().catch(() => null);
       if (savedKeys) localKeys.current = savedKeys;
       const savedDevice = await vault.getDeviceId().catch(() => null);
       if (savedDevice) myDeviceId.current = savedDevice;
 
-      if (!localKeys.current) setView("REGISTER"); else startSession();
+      if (!localKeys.current) setView("REGISTER"); else {
+        const claims = decodeJwtClaims(api.getToken());
+        onAuthenticated(uid, res.org_id, myDeviceId.current!, localKeys.current, Boolean((claims as any)?.is_admin));
+      }
     } catch (err: any) {
-      setError("Login failed. " + err.message);
-      if (err.message?.includes("No passkeys found") && uid) setView("REGISTER");
+      // "No passkeys found" is expected for first-time users — don't show as error
+      if (err.message?.includes("No passkeys found") && uid) {
+        setView("REGISTER");
+      } else {
+        addToast("Login failed: " + err.message, "error");
+      }
     }
   };
 
+  const completeSetup = async (token: string, uid: string, orgIdVal: string, adminFlag: boolean) => {
+    api.setToken(token);
+    setUserId(uid);
+    await invoke("set_session_jwt", { jwt: token }).catch(() => {});
+
+    const keys = await crypto.generateKeys();
+    localKeys.current = keys;
+    try {
+      await vault.saveLocalKeys(keys);
+      const otpkPairs = keys.one_time_pre_keys.map((k: any) => ({
+        key_id: k.key_id.toString(),
+        private_key: Array.from(Uint8Array.from(atob(k.secret_key), c => c.charCodeAt(0)))
+      }));
+      await vault.storeOtpkBatch(otpkPairs);
+    } catch (err) {
+      console.error("Local vault save failed", err);
+    }
+
+    const uploadRes = await api.uploadKeys({
+      user_id: uid,
+      org_id: orgIdVal,
+      device_name: "Desktop App",
+      identity_key: keys.identity_public,
+      signed_pre_key: keys.signed_pre_key_public,
+      signed_pre_key_sig: keys.signed_pre_key_signature,
+      one_time_pre_keys: keys.one_time_pre_keys.map((k: any) => ({ key_id: k.key_id, public_key: k.public_key })),
+    });
+    if (uploadRes.error) throw new Error(uploadRes.error);
+
+    myDeviceId.current = uploadRes.device_id;
+    try { await vault.saveDeviceId(uploadRes.device_id); } catch {}
+    // Call onAuthenticated directly with fresh values (React setState is async)
+    onAuthenticated(uid, orgIdVal, uploadRes.device_id, keys, adminFlag);
+  };
+
   const handleRegisterPasskey = async () => {
-    if (!userId) return; setError("");
+    if (!userId) return;
+    setView("LOADING");
     try {
       // Try admin bootstrap first (bypasses WebAuthn for configured admin)
-      let bootstrapToken: string | null = null;
-      let bootstrapOrgId: string | null = null;
       try {
         const bootstrapRes = await api.adminBootstrap(email);
         if (bootstrapRes.token) {
-          bootstrapToken = bootstrapRes.token;
-          bootstrapOrgId = bootstrapRes.org_id;
+          await completeSetup(bootstrapRes.token, userId, bootstrapRes.org_id, true);
+          return;
         }
       } catch {
         // Not the admin or bootstrap not available — continue with normal flow
-      }
-
-      if (bootstrapToken && bootstrapOrgId) {
-        // Admin bootstrap succeeded — skip WebAuthn entirely
-        api.setToken(bootstrapToken);
-        setOrgId(bootstrapOrgId);
-        setIsAdmin(true);
-        await invoke("set_session_jwt", { jwt: bootstrapToken }).catch(() => {});
-
-        // Generate and upload E2E keys
-        const keys = await crypto.generateKeys(); 
-        localKeys.current = keys;
-        try { 
-          await vault.saveLocalKeys(keys); 
-          const otpkPairs = keys.one_time_pre_keys.map((k: any) => ({
-            key_id: k.key_id.toString(),
-            private_key: Array.from(Uint8Array.from(atob(k.secret_key), c => c.charCodeAt(0)))
-          }));
-          await vault.storeOtpkBatch(otpkPairs);
-        } catch (err) {
-          console.error("Local vault save failed", err);
-        }
-
-        const uploadRes = await api.uploadKeys({
-          user_id: userId, 
-          org_id: bootstrapOrgId, 
-          device_name: "Desktop App",
-          identity_key: keys.identity_public, 
-          signed_pre_key: keys.signed_pre_key_public,
-          signed_pre_key_sig: keys.signed_pre_key_signature,
-          one_time_pre_keys: keys.one_time_pre_keys.map((k: any) => ({ key_id: k.key_id, public_key: k.public_key })),
-        });
-        if (uploadRes.error) throw new Error(uploadRes.error);
-
-        myDeviceId.current = uploadRes.device_id;
-        try { await vault.saveDeviceId(uploadRes.device_id); } catch {}
-        
-        startSession();
-        return;
       }
 
       // Normal WebAuthn flow for non-admin users
@@ -139,41 +152,12 @@ export default function AuthFlow({
 
       const loginRes = await api.loginPasskey(email);
       if (loginRes.error) throw new Error(loginRes.error);
-      
-      api.setToken(loginRes.token);
-      setOrgId(loginRes.org_id);
-      setIsAdmin(Boolean((decodeJwtClaims(loginRes.token) as any)?.is_admin));
-      await invoke("set_session_jwt", { jwt: loginRes.token }).catch(() => {});
 
-      const keys = await crypto.generateKeys(); 
-      localKeys.current = keys;
-      try { 
-        await vault.saveLocalKeys(keys); 
-        const otpkPairs = keys.one_time_pre_keys.map((k: any) => ({
-          key_id: k.key_id.toString(),
-          private_key: Array.from(Uint8Array.from(atob(k.secret_key), c => c.charCodeAt(0)))
-        }));
-        await vault.storeOtpkBatch(otpkPairs);
-      } catch (err) {
-        console.error("Local vault save failed", err);
-      }
-
-      const uploadRes = await api.uploadKeys({
-        user_id: userId, 
-        org_id: loginRes.org_id, 
-        device_name: "Desktop App",
-        identity_key: keys.identity_public, 
-        signed_pre_key: keys.signed_pre_key_public,
-        signed_pre_key_sig: keys.signed_pre_key_signature,
-        one_time_pre_keys: keys.one_time_pre_keys.map((k: any) => ({ key_id: k.key_id, public_key: k.public_key })),
-      });
-      if (uploadRes.error) throw new Error(uploadRes.error);
-
-      myDeviceId.current = uploadRes.device_id;
-      try { await vault.saveDeviceId(uploadRes.device_id); } catch {}
-      
-      startSession();
-    } catch (err: any) { setError(err.message); }
+      await completeSetup(loginRes.token, userId, loginRes.org_id, Boolean((decodeJwtClaims(loginRes.token) as any)?.is_admin));
+    } catch (err: any) {
+      setView("REGISTER");
+      addToast(err.message, "error");
+    }
   };
 
   const checkApproval = async () => {
@@ -182,27 +166,18 @@ export default function AuthFlow({
       await handleLogin(email, userId);
     } catch (err: any) {
       if (!err.message?.includes("No passkeys found")) {
-        setError("Still pending approval...");
+        addToast("Still pending approval...", "error");
       }
     } finally {
       setIsCheckingApproval(false);
     }
   };
 
-  const startSession = () => {
-    if (!myDeviceId.current) {
-      setError("Device identity missing. Please register this device again.");
-      setView("REGISTER");
-      return;
-    }
-    onAuthenticated(userId, orgId, myDeviceId.current, localKeys.current, isAdmin);
-  };
 
   return (
     <OnboardingScreen
       view={view}
       email={email}
-      error={error}
       accessCode={accessCode}
       isCheckingApproval={isCheckingApproval}
       onEmailChange={setEmail}
@@ -210,7 +185,6 @@ export default function AuthFlow({
       onRegister={handleRegisterPasskey}
       onBack={() => setView("HOME")}
       onCheckApproval={checkApproval}
-      onAdminAccess={onAdminAccess}
     />
   );
 }

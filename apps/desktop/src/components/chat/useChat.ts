@@ -3,6 +3,19 @@ import { socket } from "../../lib/socket";
 import * as vault from "../../lib/vault";
 import { processIncomingMessage } from "../../lib/crypto_orchestration";
 
+import React from "react";
+import type { LocalKeys, Message } from "../../types";
+
+interface UseChatProps {
+  localKeys: React.MutableRefObject<LocalKeys | null>;
+  userId: string | null;
+  activeContactId: React.MutableRefObject<string | null>;
+  setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
+  setLastMessageByContact: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+  setTypingByContact: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
+  setUnreadByContact: React.Dispatch<React.SetStateAction<Record<string, number>>>;
+}
+
 export default function useChat({
   localKeys,
   userId,
@@ -11,7 +24,7 @@ export default function useChat({
   setLastMessageByContact,
   setTypingByContact,
   setUnreadByContact,
-}: any) {
+}: UseChatProps) {
   const tempToServerIdMap = useRef<Map<string, string>>(new Map());
 
   const resolveLocalMessageId = (serverMessageId: string) => {

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Search, Send, Shield, Zap, CheckCircle, Lock, MessageSquare, XCircle } from "lucide-react";
 import { socket } from "../../lib/socket";
 import EncryptionSpinner from "../EncryptionSpinner";
@@ -15,16 +15,32 @@ export default function ChatArena({
   typingByContact,
   localKeys,
   setLastMessageByContact,
-  showContactDetail
+  showContactDetail,
+  isNarrowLayout,
+  onRequestOpenSidebar,
 }: any) {
   const [inputText, setInputText] = useState("");
   const [messageSearch, setMessageSearch] = useState("");
   const typingTimeout = useRef<number | null>(null);
   const feedEnd = useRef<HTMLDivElement>(null);
+  const composerInputRef = useRef<HTMLTextAreaElement>(null);
+
+  const resizeComposer = (element: HTMLTextAreaElement | null) => {
+    if (!element) return;
+    const MAX_HEIGHT = 150;
+    element.style.height = "auto";
+    const nextHeight = Math.min(element.scrollHeight, MAX_HEIGHT);
+    element.style.height = `${Math.max(40, nextHeight)}px`;
+    element.style.overflowY = element.scrollHeight > MAX_HEIGHT ? "auto" : "hidden";
+  };
 
   useEffect(() => {
     feedEnd.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    resizeComposer(composerInputRef.current);
+  }, [inputText]);
 
   const sendMessage = async () => {
     if (!inputText.trim() || !activeContact) return;
@@ -80,9 +96,17 @@ export default function ChatArena({
       } catch {}
       setLastMessageByContact((prev: any) => ({ ...prev, [activeContact.id]: myMsg.text }));
       setMessages((prev: any) => [...prev, myMsg]); setInputText("");
+      resizeComposer(composerInputRef.current);
       socket.send("TYPING_EVENT", { recipient_device_id: targetDevice.device_id, is_typing: false });
     } catch (err) {
       console.error("[ratchet] sendMessage failed:", err);
+    }
+  };
+
+  const handleComposerKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      void sendMessage();
     }
   };
 
@@ -113,7 +137,7 @@ export default function ChatArena({
               </div>
               <div>
                 <div className="chat-header-name">{getDisplayName(activeContact)}</div>
-                <div style={{ fontFamily: "var(--font-mono)", fontSize: "0.58rem", color: "var(--text-muted)" }}>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: "var(--fs-chat-meta)", color: "var(--text-muted)" }}>
                   {typingByContact[activeContact.id]
                     ? "Typing now..."
                     : `${activeContact.device_count ?? 1} device${(activeContact.device_count ?? 1) !== 1 ? "s" : ""} registered`}
@@ -132,7 +156,7 @@ export default function ChatArena({
 
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{
-                fontFamily: "var(--font-mono)", fontSize: "0.6rem",
+                fontFamily: "var(--font-mono)", fontSize: "var(--fs-chat-meta)",
                 color: "var(--text-muted)", textAlign: "right", lineHeight: 1.6
               }}>
                 <div>{workspaceName.toUpperCase()}</div>
@@ -192,13 +216,22 @@ export default function ChatArena({
                 <div className="chat-empty-state">
                   <MessageSquare size={24} strokeWidth={1} style={{ color: "var(--text-muted)" }} />
                   <div>{messageSearch ? "No local matches found" : "Conversation ready"}</div>
-                  <div style={{ color: "var(--text-muted)", fontSize: "0.65rem" }}>
+                  <div style={{ color: "var(--text-muted)", fontSize: "var(--fs-chat-meta)" }}>
                     {messageSearch
                       ? "Try a different keyword. Search runs only against this device's local history."
                       : "Send the first message to start this encrypted thread."}
                   </div>
                 </div>
               )}
+
+              {/* Typing indicator */}
+              {typingByContact[activeContact.id] && (
+                <div className="typing-indicator">
+                  <div className="typing-dots"><span /><span /><span /></div>
+                  {getDisplayName(activeContact)} is typing
+                </div>
+              )}
+
               <div ref={feedEnd} />
             </div>
           )}
@@ -208,18 +241,20 @@ export default function ChatArena({
             <div className="composer">
               <div style={{
                 display: "flex", alignItems: "center", gap: 8,
-                fontFamily: "var(--font-mono)", fontSize: "0.6rem",
+                fontFamily: "var(--font-mono)", fontSize: "var(--fs-chat-meta)",
                 color: "var(--accent-primary)", flexShrink: 0
               }}>
                 <Lock size={11} />
                 E2EE
               </div>
               <div className="composer-input-wrap">
-                <input
+                <textarea
+                  ref={composerInputRef}
                   id="message-input"
-                  className="input"
+                  className="input composer-textarea"
                   placeholder="Write a message"
                   value={inputText}
+                  rows={1}
                   onChange={e => {
                     const nextValue = e.target.value;
                     setInputText(nextValue);
@@ -238,10 +273,10 @@ export default function ChatArena({
                       }, 1200);
                     }
                   }}
-                  onKeyDown={e => e.key === "Enter" && sendMessage()}
+                  onKeyDown={handleComposerKeyDown}
                   autoComplete="off"
                 />
-                <span className="composer-key-hint">↵</span>
+                <span className="composer-key-hint">Enter Send · Shift+Enter New Line</span>
               </div>
               <button
                 id="send-btn"
@@ -274,6 +309,15 @@ export default function ChatArena({
           </div>
           <h3>Your workspace is ready</h3>
           <p>Choose a person from the sidebar to start a secure conversation.</p>
+          {isNarrowLayout ? (
+            <button
+              id="open-contacts-btn"
+              className="btn btn-ghost btn-sm"
+              onClick={() => onRequestOpenSidebar && onRequestOpenSidebar()}
+            >
+              Browse contacts
+            </button>
+          ) : null}
         </div>
       )}
     </main>

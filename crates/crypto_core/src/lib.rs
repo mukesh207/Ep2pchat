@@ -4,7 +4,9 @@ pub use ratchet::{DhRatchetKeyPair, MessageHeader, RatchetError, RatchetSession}
 use sodiumoxide::crypto::aead::chacha20poly1305_ietf as aead;
 use sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::{gen_keypair, PublicKey, SecretKey};
 
+use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use sodiumoxide::crypto::scalarmult::curve25519::{scalarmult, GroupElement, Scalar};
 use sodiumoxide::crypto::sign::ed25519::SecretKey as SignSecretKey;
 
@@ -121,9 +123,13 @@ pub fn x3dh_sender(
         combined.extend_from_slice(&dh4);
     }
 
-    sodiumoxide::crypto::hash::sha256::hash(&combined)
-        .as_ref()
-        .to_vec()
+    // HKDF-SHA256 per Signal X3DH spec (salt = 32 zero bytes)
+    let salt = [0u8; 32];
+    let hk = Hkdf::<Sha256>::new(Some(&salt), &combined);
+    let mut okm = [0u8; 32];
+    hk.expand(b"TrustlineX3DH_v1", &mut okm)
+        .expect("32 bytes is always valid for HKDF-SHA256");
+    okm.to_vec()
 }
 
 pub fn x3dh_receiver(
@@ -147,9 +153,13 @@ pub fn x3dh_receiver(
         combined.extend_from_slice(&dh4);
     }
 
-    sodiumoxide::crypto::hash::sha256::hash(&combined)
-        .as_ref()
-        .to_vec()
+    // HKDF-SHA256 per Signal X3DH spec (salt = 32 zero bytes)
+    let salt = [0u8; 32];
+    let hk = Hkdf::<Sha256>::new(Some(&salt), &combined);
+    let mut okm = [0u8; 32];
+    hk.expand(b"TrustlineX3DH_v1", &mut okm)
+        .expect("32 bytes is always valid for HKDF-SHA256");
+    okm.to_vec()
 }
 
 pub fn encrypt_message(plaintext: &[u8], key: &[u8]) -> (Vec<u8>, Vec<u8>) {

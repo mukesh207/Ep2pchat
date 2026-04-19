@@ -1,5 +1,6 @@
 import { startRegistration, startAuthentication } from '@simplewebauthn/browser';
 import { invoke } from '@tauri-apps/api/core';
+import type { KeyUploadPayload } from './types';
 
 function trimTrailingSlash(value: string) {
     return value.replace(/\/+$/, "");
@@ -199,7 +200,7 @@ export async function revokeOwnDevice(deviceId: string) {
     });
 }
 
-export async function uploadKeys(payload: any) {
+export async function uploadKeys(payload: KeyUploadPayload) {
     return requestJson('/keys/upload', {
         method: 'POST',
         headers: authHeaders(),

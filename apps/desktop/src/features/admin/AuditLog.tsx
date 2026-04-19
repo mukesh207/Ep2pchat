@@ -81,34 +81,36 @@ export default function AuditLog({
       ) : visibleRows.length === 0 ? (
         <div className="admin-empty">No audit events recorded.</div>
       ) : (
-        <table className="admin-table">
-          <thead>
-            <tr>
-              <th>Timestamp</th>
-              <th>Actor</th>
-              <th>Action</th>
-              <th>Target</th>
-              <th>Details</th>
-            </tr>
-          </thead>
-          <tbody>
-            {visibleRows.map((row) => (
-              <tr key={row.id}>
-                <td>{new Date(row.created_at).toLocaleString()}</td>
-                <td>{row.actor_email ?? "SYSTEM"}</td>
-                <td>
-                  <span style={{ color: actionColor(row.action), fontWeight: 600 }}>{row.action}</span>
-                </td>
-                <td>{String((row.details as any)?.target_user_id ?? (row.details as any)?.device_id ?? "-")}</td>
-                <td>
-                  <code style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>
-                    {JSON.stringify(row.details)}
-                  </code>
-                </td>
+        <div className="admin-table-scroll">
+          <table className="admin-table">
+            <thead>
+              <tr>
+                <th>Timestamp</th>
+                <th>Actor</th>
+                <th>Action</th>
+                <th>Target</th>
+                <th>Details</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {visibleRows.map((row) => (
+                <tr key={row.id}>
+                  <td>{new Date(row.created_at).toLocaleString()}</td>
+                  <td>{row.actor_email ?? "SYSTEM"}</td>
+                  <td>
+                    <span style={{ color: actionColor(row.action), fontWeight: 600 }}>{row.action}</span>
+                  </td>
+                  <td>{String((row.details as any)?.target_user_id ?? (row.details as any)?.device_id ?? "-")}</td>
+                  <td>
+                    <code style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>
+                      {JSON.stringify(row.details)}
+                    </code>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       <div style={{ display: "flex", gap: 8, marginTop: 10 }}>

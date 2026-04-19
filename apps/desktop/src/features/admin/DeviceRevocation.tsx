@@ -105,35 +105,37 @@ export default function DeviceRevocation({
           ) : devices.length === 0 ? (
             <div className="admin-empty">No active devices found for this user.</div>
           ) : (
-            <table className="admin-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Registered</th>
-                  <th>Last Seen</th>
-                  <th>Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {devices.map((device) => (
-                  <tr key={device.id}>
-                    <td>{device.device_name}</td>
-                    <td>{relativeTime(device.registered_at)}</td>
-                    <td>{relativeTime(device.last_seen)}</td>
-                    <td>
-                      <button
-                        className="btn btn-danger btn-sm"
-                        onClick={() => handleRevoke(device.id)}
-                        disabled={revokingId === device.id}
-                      >
-                        {revokingId === device.id ? <Loader2 size={12} className="spin" /> : <ShieldOff size={12} />}
-                        Revoke
-                      </button>
-                    </td>
+            <div className="admin-table-scroll">
+              <table className="admin-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Registered</th>
+                    <th>Last Seen</th>
+                    <th>Action</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {devices.map((device) => (
+                    <tr key={device.id}>
+                      <td>{device.device_name}</td>
+                      <td>{relativeTime(device.registered_at)}</td>
+                      <td>{relativeTime(device.last_seen)}</td>
+                      <td>
+                        <button
+                          className="btn btn-danger btn-sm"
+                          onClick={() => handleRevoke(device.id)}
+                          disabled={revokingId === device.id}
+                        >
+                          {revokingId === device.id ? <Loader2 size={12} className="spin" /> : <ShieldOff size={12} />}
+                          Revoke
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       </div>

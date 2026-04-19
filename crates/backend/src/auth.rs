@@ -5,12 +5,51 @@ use axum::{
     routing::post,
     Json, Router,
 };
+use dashmap::DashMap;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::Row;
+
+use std::sync::Arc;
+use std::time::Instant;
 use uuid::Uuid;
 use webauthn_rs::prelude::*;
+
+// ── Rate Limiter ────────────────────────────────────────────────────────────
+
+const RATE_LIMIT_MAX_REQUESTS: usize = 5;
+const RATE_LIMIT_WINDOW_SECS: u64 = 60;
+
+/// In-memory IP-based rate limiter using DashMap for lock-free concurrent access.
+#[derive(Clone)]
+pub struct RateLimiter {
+    attempts: Arc<DashMap<String, Vec<Instant>>>,
+}
+
+impl RateLimiter {
+    pub fn new() -> Self {
+        Self {
+            attempts: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Returns true if the request is allowed, false if rate-limited.
+    pub fn check(&self, key: &str) -> bool {
+        let now = Instant::now();
+        let cutoff = now - std::time::Duration::from_secs(RATE_LIMIT_WINDOW_SECS);
+
+        let mut entry = self.attempts.entry(key.to_string()).or_default();
+        // Prune old entries
+        entry.retain(|t| *t > cutoff);
+
+        if entry.len() >= RATE_LIMIT_MAX_REQUESTS {
+            return false;
+        }
+        entry.push(now);
+        true
+    }
+}
 
 pub fn build_access_code(user_id: Uuid) -> String {
     let compact = user_id.simple().to_string().to_uppercase();
@@ -84,6 +123,12 @@ async fn admin_bootstrap(
     Json(payload): Json<RequestAccessPayload>,
 ) -> Json<Value> {
     let email = payload.email.trim().to_lowercase();
+
+    // Rate limit: 5 attempts per minute per email
+    if !state.rate_limiter.check(&format!("admin-bootstrap:{}", email)) {
+        tracing::warn!("⚠️ Rate limit exceeded for admin-bootstrap: {}", email);
+        return Json(json!({"error": "Too many attempts. Please try again in a minute."}));
+    }
 
     // Only allow the configured admin email
     let admin_email = std::env::var("ADMIN_EMAIL")

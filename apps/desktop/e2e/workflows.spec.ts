@@ -160,6 +160,112 @@ test.describe("Frontend + Backend workflows", () => {
     await expect(page.locator(".admin-detail-body")).toContainText("Alice Desktop");
   });
 
+  test("chat layout supports sidebar drawer, resize persistence, and multiline composer shortcuts", async ({ page, request }) => {
+    const fixture = await bootstrapData(request, "dashboard-autologin");
+    const params = new URLSearchParams({
+      e2e_token: fixture.alice.token,
+      e2e_autologin: "true",
+      e2e_user_id: fixture.alice.user_id,
+      e2e_org_id: fixture.alice.org_id,
+      e2e_device_id: fixture.alice.device_id,
+      e2e_email: fixture.alice.email,
+    });
+
+    await page.setViewportSize({ width: 1280, height: 860 });
+    await page.goto(`/?${params.toString()}`);
+    await expect(page.locator("#contact-search")).toBeVisible();
+
+    const sidebar = page.locator(".sidebar").first();
+    const resizer = page.locator("#sidebar-resizer");
+    await expect(resizer).toBeVisible();
+
+    const sidebarWidthBefore = await sidebar.evaluate((element) => element.getBoundingClientRect().width);
+    const handleBox = await resizer.boundingBox();
+    if (!handleBox) throw new Error("Sidebar resize handle is not visible.");
+
+    await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(handleBox.x + handleBox.width / 2 + 90, handleBox.y + handleBox.height / 2);
+    await page.mouse.up();
+
+    const sidebarWidthAfter = await sidebar.evaluate((element) => element.getBoundingClientRect().width);
+    expect(sidebarWidthAfter).toBeGreaterThan(sidebarWidthBefore);
+
+    const storedSidebarWidth = await page.evaluate(() =>
+      Number(window.localStorage.getItem("trustline.sidebar.width")),
+    );
+    expect(storedSidebarWidth).toBeGreaterThanOrEqual(220);
+    expect(storedSidebarWidth).toBeLessThanOrEqual(420);
+
+    await page.reload();
+    await expect(page.locator("#contact-search")).toBeVisible();
+    const sidebarWidthReloaded = await sidebar.evaluate((element) => element.getBoundingClientRect().width);
+    expect(Math.abs(sidebarWidthReloaded - storedSidebarWidth)).toBeLessThan(40);
+
+    await page.setViewportSize({ width: 820, height: 860 });
+    await expect(page.locator("#sidebar-toggle-btn")).toBeVisible();
+    await expect(page.locator(".app-body")).not.toHaveClass(/sidebar-open/);
+
+    await page.click("#sidebar-toggle-btn");
+    await expect(page.locator(".app-body")).toHaveClass(/sidebar-open/);
+    await expect(page.locator("#sidebar-backdrop")).toBeVisible();
+    await page.click("#sidebar-backdrop");
+    await expect(page.locator(".app-body")).not.toHaveClass(/sidebar-open/);
+
+    await page.click("#sidebar-toggle-btn");
+    await page.locator(".contact-item").first().click();
+    await expect(page.locator(".app-body")).not.toHaveClass(/sidebar-open/);
+    await expect(page.locator("#message-input")).toBeVisible();
+
+    const composer = page.locator("#message-input");
+    await composer.fill("Short");
+    const singleLineHeight = await composer.evaluate((element) => (element as HTMLTextAreaElement).clientHeight);
+    await composer.press("Shift+Enter");
+    await composer.type("Second line");
+    const twoLineHeight = await composer.evaluate((element) => (element as HTMLTextAreaElement).clientHeight);
+    expect(twoLineHeight).toBeGreaterThan(singleLineHeight);
+
+    await composer.fill(Array.from({ length: 35 }, (_, index) => `Line ${index + 1}`).join("\n"));
+    const cappedHeight = await composer.evaluate((element) => (element as HTMLTextAreaElement).clientHeight);
+    expect(cappedHeight).toBeLessThanOrEqual(150);
+
+    await composer.fill("Line one");
+    await composer.press("Shift+Enter");
+    await composer.type("Line two");
+    const withNewline = await composer.inputValue();
+    expect(withNewline).toContain("\n");
+
+    await composer.press("Enter");
+    const afterEnter = await composer.inputValue();
+    expect(afterEnter.endsWith("\n")).toBeFalsy();
+  });
+
+  test("admin tables use horizontal overflow containers on narrow windows", async ({ page, request }) => {
+    const fixture = await bootstrapData(request, "admin-approve");
+    const params = new URLSearchParams({
+      e2e_token: fixture.admin.token,
+      e2e_autologin: "true",
+      e2e_user_id: fixture.admin.user_id,
+      e2e_org_id: fixture.admin.org_id,
+      e2e_device_id: fixture.admin.device_id,
+      e2e_email: fixture.admin.email,
+    });
+
+    await page.setViewportSize({ width: 620, height: 860 });
+    await page.goto(`/?${params.toString()}`);
+    await page.click("#admin-btn");
+
+    const scrollContainer = page.locator(".admin-table-scroll").first();
+    await expect(scrollContainer).toBeVisible();
+
+    const overflow = await scrollContainer.evaluate((element) => ({
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+    }));
+
+    expect(overflow.scrollWidth).toBeGreaterThan(overflow.clientWidth);
+  });
+
   test("backend websocket protocol: delivery, receipts, typing, offline replay, revocation and tenant isolation", async ({ request }) => {
     const fixture = await bootstrapData(request, "ws-protocol");
 

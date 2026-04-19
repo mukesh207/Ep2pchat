@@ -66,53 +66,57 @@ export default function PendingApprovals({
       {rows.length === 0 ? (
         <div className="admin-empty">No pending access requests.</div>
       ) : (
-        <table className="admin-table">
-          <thead>
-            <tr>
-              <th>Email</th>
-              <th>Requested</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((user) => {
-              const busy = busyById[user.id];
-              return (
-                <tr
-                  key={user.id}
-                  style={{
-                    opacity: removingIds.has(user.id) ? 0 : 1,
-                    transform: removingIds.has(user.id) ? "translateX(14px)" : "translateX(0)",
-                    transition: "all 220ms ease",
-                  }}
-                >
-                  <td>{user.email}</td>
-                  <td>{relativeTime(user.requested_at)}</td>
-                  <td>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <button
-                        className="btn btn-teal btn-sm"
-                        onClick={() => runAction(user.id, "approve")}
-                        disabled={Boolean(busy)}
-                      >
-                        {busy === "approve" ? <Loader2 size={12} className="spin" /> : <CheckCircle size={12} />}
-                        Approve
-                      </button>
-                      <button
-                        className="btn btn-danger btn-sm"
-                        onClick={() => runAction(user.id, "deny")}
-                        disabled={Boolean(busy)}
-                      >
-                        {busy === "deny" ? <Loader2 size={12} className="spin" /> : <XCircle size={12} />}
-                        Deny
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div className="admin-table-scroll">
+          <table className="admin-table">
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Requested</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((user) => {
+                const busy = busyById[user.id];
+                return (
+                  <tr
+                    key={user.id}
+                    style={{
+                      opacity: removingIds.has(user.id) ? 0 : 1,
+                      transform: removingIds.has(user.id) ? "translateX(14px)" : "translateX(0)",
+                      transition: "all 220ms ease",
+                    }}
+                  >
+                    <td>{user.email}</td>
+                    <td>{relativeTime(user.requested_at)}</td>
+                    <td>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button
+                          id={`approve-${user.id}`}
+                          className="btn btn-teal btn-sm"
+                          onClick={() => runAction(user.id, "approve")}
+                          disabled={Boolean(busy)}
+                        >
+                          {busy === "approve" ? <Loader2 size={12} className="spin" /> : <CheckCircle size={12} />}
+                          Approve
+                        </button>
+                        <button
+                          id={`deny-${user.id}`}
+                          className="btn btn-danger btn-sm"
+                          onClick={() => runAction(user.id, "deny")}
+                          disabled={Boolean(busy)}
+                        >
+                          {busy === "deny" ? <Loader2 size={12} className="spin" /> : <XCircle size={12} />}
+                          Deny
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </>
   );

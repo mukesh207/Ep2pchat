@@ -3,6 +3,20 @@
 
 // ── Domain Models ──────────────────────────────────────────────────────────
 
+export enum WsMessageType {
+  MESSAGE_SEND = "MESSAGE_SEND",
+  MESSAGE_RECEIVE = "MESSAGE_RECEIVE",
+  MESSAGE_ACK = "MESSAGE_ACK",
+  MESSAGE_READ = "MESSAGE_READ",
+  MESSAGE_STATUS = "MESSAGE_STATUS",
+  MESSAGE_CONFIRM = "MESSAGE_CONFIRM",
+  TYPING_EVENT = "TYPING_EVENT",
+  KEYS_REQUEST = "KEYS_REQUEST",
+  KEYS_RESPONSE = "KEYS_RESPONSE",
+  DEVICE_REVOKED = "DEVICE_REVOKED",
+  ERROR = "ERROR",
+}
+
 export interface Contact {
   id: string;
   email: string;
@@ -52,6 +66,16 @@ export interface OneTimeKey {
   key_id: number;
   public_key: string;
   secret_key: string;
+}
+
+export interface KeyUploadPayload {
+  user_id: string;
+  org_id: string;
+  device_name: string;
+  identity_key: string;
+  signed_pre_key: string;
+  signed_pre_key_sig: string;
+  one_time_pre_keys: { key_id: number; public_key: string }[];
 }
 
 export interface LocalKeys {

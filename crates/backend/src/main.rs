@@ -38,6 +38,7 @@ pub struct AppState {
     pub ws: WsState,
     pub nats: NatsService,
     pub jwt_secret: Arc<String>,
+    pub rate_limiter: crate::auth::RateLimiter,
 }
 
 /// Constrain Tokio to 4 worker threads in dev to reduce CPU stress.
@@ -158,6 +159,7 @@ async fn async_main() {
         ws: WsState::new(),
         nats: NatsService::new(nats_client),
         jwt_secret,
+        rate_limiter: crate::auth::RateLimiter::new(),
     };
     let test_mode = env_flag("TEST_MODE");
 
