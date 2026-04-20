@@ -52,6 +52,12 @@ function readSidebarWidth() {
   return clampSidebarWidth(rawValue);
 }
 
+function getErrorMessage(err: unknown, fallback: string) {
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === "string" && err.trim()) return err;
+  return fallback;
+}
+
 export default function App() {
   const [rootView, setRootView] = useState<RootView>("AUTH");
   const [session, setSession] = useState<SessionState | null>(null);
@@ -286,6 +292,8 @@ export default function App() {
     setActiveContact(contact);
     setUnreadByContact((prev) => ({ ...prev, [contact.id]: 0 }));
 
+    setWorkspaceError("");
+
     try {
       const history = (await vault.getMessages(contact.id)) as any[];
       setMessages(
@@ -298,11 +306,16 @@ export default function App() {
           status: m.message_status,
         })),
       );
+    } catch (err: unknown) {
+      setMessages([]);
+      setWorkspaceError(getErrorMessage(err, "Failed to load local message history."));
+    }
 
+    try {
       const bundle = await api.getUserKeys(contact.id);
       contact.devices = bundle.devices;
-    } catch (err: any) {
-      setWorkspaceError(err?.message || "Failed to open conversation.");
+    } catch (err: unknown) {
+      setWorkspaceError(getErrorMessage(err, "Failed to load recipient encryption keys."));
     } finally {
       setIsHandshaking(false);
     }

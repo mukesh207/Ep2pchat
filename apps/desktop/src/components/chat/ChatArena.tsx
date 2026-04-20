@@ -4,6 +4,7 @@ import { socket } from "../../lib/socket";
 import EncryptionSpinner from "../EncryptionSpinner";
 import * as crypto from "../../lib/crypto";
 import * as vault from "../../lib/vault";
+import { useToast } from "../ui/Toast";
 
 export default function ChatArena({
   activeContact,
@@ -19,6 +20,7 @@ export default function ChatArena({
   isNarrowLayout,
   onRequestOpenSidebar,
 }: any) {
+  const { addToast } = useToast();
   const [inputText, setInputText] = useState("");
   const [messageSearch, setMessageSearch] = useState("");
   const typingTimeout = useRef<number | null>(null);
@@ -42,6 +44,12 @@ export default function ChatArena({
     resizeComposer(composerInputRef.current);
   }, [inputText]);
 
+  const getErrorMessage = (err: unknown, fallback: string) => {
+    if (err instanceof Error && err.message) return err.message;
+    if (typeof err === "string" && err.trim()) return err;
+    return fallback;
+  };
+
   const sendMessage = async () => {
     if (!inputText.trim() || !activeContact) return;
 
@@ -50,9 +58,15 @@ export default function ChatArena({
       timestamp: new Date().toISOString(), is_me: true, status: "sending",
     };
 
-    if (!localKeys.current) return;
+    if (!localKeys.current) {
+      addToast("Local encryption keys are unavailable. Fix keychain access and sign in again.", "error");
+      return;
+    }
     const targetDevice = activeContact.devices?.[0];
-    if (!targetDevice) return;
+    if (!targetDevice) {
+      addToast("Cannot send: recipient has no registered device keys yet.", "error");
+      return;
+    }
 
     try {
       let ephemeralPk: string | undefined;
@@ -100,6 +114,7 @@ export default function ChatArena({
       socket.send("TYPING_EVENT", { recipient_device_id: targetDevice.device_id, is_typing: false });
     } catch (err) {
       console.error("[ratchet] sendMessage failed:", err);
+      addToast(getErrorMessage(err, "Failed to encrypt or send message."), "error");
     }
   };
 
@@ -282,7 +297,7 @@ export default function ChatArena({
                 id="send-btn"
                 className="btn btn-primary"
                 onClick={sendMessage}
-                disabled={!inputText.trim()}
+                disabled={!inputText.trim() || !localKeys.current || !activeContact?.devices?.[0]}
               >
                 <Send size={13} /> Send
               </button>

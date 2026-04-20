@@ -6,7 +6,22 @@ export async function migrateLocalStorageKeyToKeychain(): Promise<void> {
 }
 
 let db: Database | null = null;
+let dbInitPromise: Promise<Database> | null = null;
 let cachedVaultSecret: string | null = null;
+
+function describeError(error: unknown): string {
+    if (typeof error === "string") return error;
+    if (error && typeof error === "object") {
+        const maybeError = error as { message?: unknown; error?: unknown };
+        if (typeof maybeError.message === "string" && maybeError.message.trim()) return maybeError.message;
+        if (typeof maybeError.error === "string" && maybeError.error.trim()) return maybeError.error;
+    }
+    try {
+        return JSON.stringify(error);
+    } catch {
+        return String(error ?? "unknown error");
+    }
+}
 
 export async function getVaultPassphrase(): Promise<string> {
     if (cachedVaultSecret) return cachedVaultSecret;
@@ -80,108 +95,113 @@ async function decryptSecret(base64Str: string): Promise<string> {
 
 export async function initVault() {
     if (db) return db;
-    
-    let passphrase = "";
-    try {
-        passphrase = await getVaultPassphrase();
-    } catch (e: any) {
-        throw new Error("[vault] Keychain access failed: " + e?.message);
-    }
+    if (dbInitPromise) return dbInitPromise;
 
-    // Pass directly to SQLCipher — never store it anywhere in JS
-    db = await Database.load('sqlite:trustline.db');
-    try {
-        await db.execute(`PRAGMA key = "x'${passphrase}'"`);
-        await db.execute(`PRAGMA cipher_page_size = 4096`);
-        await db.select("SELECT count(*) FROM sqlite_master");
-    } catch (e: any) {
-        throw new Error("[vault] Vault decrypt failed: " + e?.message);
-    }
-    
-    // Create tables if they don't exist
-    await db.execute(`
-        CREATE TABLE IF NOT EXISTS local_keys (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            identity_public TEXT,
-            identity_secret TEXT,
-            signed_pre_key_public TEXT,
-            signed_pre_key_secret TEXT,
-            signed_pre_key_signature TEXT,
-            is_active BOOLEAN DEFAULT 1
-        );
-
-        CREATE TABLE IF NOT EXISTS messages (
-            id TEXT PRIMARY KEY,
-            temp_id TEXT,
-            conversation_id TEXT,
-            sender_id TEXT,
-            recipient_id TEXT,
-            content TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            is_me BOOLEAN,
-            message_status TEXT DEFAULT 'sent'
-        );
-
-        CREATE TABLE IF NOT EXISTS user_config (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS ratchet_sessions (
-            conversation_id TEXT PRIMARY KEY,
-            session_json    TEXT NOT NULL,
-            updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS otpk_private_keys (
-            key_id          TEXT    PRIMARY KEY,
-            private_key_b64 TEXT    NOT NULL,
-            created_at      TEXT    NOT NULL,
-            consumed        INTEGER NOT NULL DEFAULT 0,
-            consumed_at     TEXT
-        );
-
-        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-            content,
-            content='messages',
-            content_rowid='rowid'
-        );
-
-        CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
-            INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
-            INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
-            INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
-            INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
-        END;
-    `);
-
-    try {
-        await db.execute("ALTER TABLE messages ADD COLUMN temp_id TEXT");
-    } catch {}
-    try {
-        await db.execute("ALTER TABLE messages ADD COLUMN conversation_id TEXT");
-    } catch {}
-    try {
-        await db.execute("ALTER TABLE messages ADD COLUMN message_status TEXT DEFAULT 'sent'");
-    } catch {}
-
-    try {
-        // One-time backfill if FTS index is empty but messages exist (upgrade scenario)
-        const rows = await db.select<{count: number}[]>("SELECT count(*) as count FROM messages_fts");
-        if (rows[0] && rows[0].count === 0) {
-            await db.execute("INSERT INTO messages_fts(rowid, content) SELECT rowid, content FROM messages;");
+    dbInitPromise = (async () => {
+        let passphrase = "";
+        try {
+            passphrase = await getVaultPassphrase();
+        } catch (e: unknown) {
+            throw new Error("[vault] Keychain access failed: " + describeError(e));
         }
-    } catch (e) {
-        console.warn("[vault] Migration backfill for FTS failed", e);
+
+        // Pass directly to SQLCipher — never store it anywhere in JS
+        const openedDb = await Database.load("sqlite:trustline.db");
+        try {
+            await openedDb.execute(`PRAGMA key = "x'${passphrase}'"`);
+            await openedDb.execute("PRAGMA cipher_page_size = 4096");
+            await openedDb.select("SELECT count(*) FROM sqlite_master");
+        } catch (e: unknown) {
+            throw new Error("[vault] Vault decrypt failed: " + describeError(e));
+        }
+
+        const schemaStatements = [
+            `CREATE TABLE IF NOT EXISTS local_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                identity_public TEXT,
+                identity_secret TEXT,
+                signed_pre_key_public TEXT,
+                signed_pre_key_secret TEXT,
+                signed_pre_key_signature TEXT,
+                is_active BOOLEAN DEFAULT 1
+            )`,
+            `CREATE TABLE IF NOT EXISTS messages (
+                id TEXT PRIMARY KEY,
+                temp_id TEXT,
+                conversation_id TEXT,
+                sender_id TEXT,
+                recipient_id TEXT,
+                content TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                is_me BOOLEAN,
+                message_status TEXT DEFAULT 'sent'
+            )`,
+            `CREATE TABLE IF NOT EXISTS user_config (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )`,
+            `CREATE TABLE IF NOT EXISTS ratchet_sessions (
+                conversation_id TEXT PRIMARY KEY,
+                session_json    TEXT NOT NULL,
+                updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+            )`,
+            `CREATE TABLE IF NOT EXISTS otpk_private_keys (
+                key_id          TEXT    PRIMARY KEY,
+                private_key_b64 TEXT    NOT NULL,
+                created_at      TEXT    NOT NULL,
+                consumed        INTEGER NOT NULL DEFAULT 0,
+                consumed_at     TEXT
+            )`,
+            `CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                content,
+                content='messages',
+                content_rowid='rowid'
+            )`,
+            `CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+                INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
+            END`,
+            `CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+                INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+            END`,
+            `CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
+                INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+                INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
+            END`,
+        ];
+
+        for (const statement of schemaStatements) {
+            await openedDb.execute(statement);
+        }
+
+        try {
+            await openedDb.execute("ALTER TABLE messages ADD COLUMN temp_id TEXT");
+        } catch {}
+        try {
+            await openedDb.execute("ALTER TABLE messages ADD COLUMN conversation_id TEXT");
+        } catch {}
+        try {
+            await openedDb.execute("ALTER TABLE messages ADD COLUMN message_status TEXT DEFAULT 'sent'");
+        } catch {}
+
+        try {
+            // One-time backfill if FTS index is empty but messages exist (upgrade scenario)
+            const rows = await openedDb.select<{count: number}[]>("SELECT count(*) as count FROM messages_fts");
+            if (rows[0] && rows[0].count === 0) {
+                await openedDb.execute("INSERT INTO messages_fts(rowid, content) SELECT rowid, content FROM messages;");
+            }
+        } catch (e) {
+            console.warn("[vault] Migration backfill for FTS failed", e);
+        }
+
+        db = openedDb;
+        return openedDb;
+    })();
+
+    try {
+        return await dbInitPromise;
+    } finally {
+        dbInitPromise = null;
     }
-    
-    return db;
 }
 
 export async function saveLocalKeys(bundle: any) {

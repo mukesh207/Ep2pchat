@@ -29,7 +29,8 @@ pub fn get_or_create_vault_key(_app: tauri::AppHandle) -> Result<String, String>
             let is_not_found = err_str.contains("not found")
                 || err_str.contains("no such item")
                 || err_str.contains("no entry")
-                || err_str.contains("the specified item could not be found");
+                || err_str.contains("the specified item could not be found")
+                || err_str.contains("no matching entry");
 
             if !is_not_found {
                 // Real keychain error
