@@ -16,6 +16,7 @@ function resolveApiBase() {
 }
 
 const API_BASE = resolveApiBase();
+const ADMIN_BOOTSTRAP_SETUP_TOKEN = import.meta.env.VITE_ADMIN_BOOTSTRAP_SETUP_TOKEN?.trim() ?? "";
 
 let authToken = "";
 
@@ -60,8 +61,15 @@ export async function adminBootstrap(email: string) {
     return requestJson('/auth/admin-bootstrap', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email })
+        body: JSON.stringify({
+            email,
+            setup_token: ADMIN_BOOTSTRAP_SETUP_TOKEN || undefined,
+        })
     });
+}
+
+export function canAttemptAdminBootstrap(): boolean {
+    return Boolean(ADMIN_BOOTSTRAP_SETUP_TOKEN);
 }
 
 export async function registerPasskey(userId: string) {

@@ -41,8 +41,15 @@ async function bootstrapData(request: APIRequestContext, scenario: string): Prom
 
 function connectWs(token: string, deviceId: string): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
+    const encodedToken = Buffer.from(token, "utf8")
+      .toString("base64")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+
     const ws = new WebSocket(
-      `${wsOrigin}/ws?token=${encodeURIComponent(token)}&device_id=${encodeURIComponent(deviceId)}`
+      `${wsOrigin}/ws?device_id=${encodeURIComponent(deviceId)}`,
+      ["trustline.v1", `auth.jwt.${encodedToken}`]
     );
     const timeout = setTimeout(() => {
       ws.terminate();

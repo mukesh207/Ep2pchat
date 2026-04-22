@@ -22,6 +22,7 @@ use axum::{
 use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 use tower_http::cors::CorsLayer;
@@ -39,16 +40,15 @@ pub struct AppState {
     pub nats: NatsService,
     pub jwt_secret: Arc<String>,
     pub rate_limiter: crate::auth::RateLimiter,
+    pub admin_bootstrap_enabled: bool,
+    pub admin_bootstrap_setup_token: Arc<Option<String>>,
+    pub admin_bootstrap_consumed: Arc<AtomicBool>,
 }
 
 /// Constrain Tokio to 4 worker threads in dev to reduce CPU stress.
 /// In release/production, the runtime will use all available cores.
 fn main() {
-    let worker_threads = if cfg!(debug_assertions) {
-        4
-    } else {
-        num_cpus()
-    };
+    let worker_threads = if cfg!(debug_assertions) { 4 } else { num_cpus() };
 
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(worker_threads)
@@ -60,9 +60,7 @@ fn main() {
 
 /// Returns the number of available CPU cores for production builds.
 fn num_cpus() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
 }
 
 async fn async_main() {
@@ -74,15 +72,8 @@ async fn async_main() {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 
-    let worker_count = if cfg!(debug_assertions) {
-        4
-    } else {
-        num_cpus()
-    };
-    tracing::info!(
-        "🚀 Trustline Backend starting ({} worker threads)...",
-        worker_count
-    );
+    let worker_count = if cfg!(debug_assertions) { 4 } else { num_cpus() };
+    tracing::info!("🚀 Trustline Backend starting ({} worker threads)...", worker_count);
 
     // ── PostgreSQL ──────────────────────────────────────────────────────
     let database_url = required_env("DATABASE_URL");
@@ -100,10 +91,7 @@ async fn async_main() {
     crypto_core::init().expect("Failed to initialize crypto core");
 
     // Run migrations automatically on startup
-    sqlx::migrate!("../../migrations")
-        .run(&pool)
-        .await
-        .expect("Failed to run database migrations");
+    sqlx::migrate!("../../migrations").run(&pool).await.expect("Failed to run database migrations");
 
     tracing::info!("✅ Database migrations applied");
 
@@ -120,7 +108,7 @@ async fn async_main() {
                     )
                     INSERT INTO users (org_id, email, status, is_admin)
                     SELECT id, $2, 'active', true FROM new_org
-                    ON CONFLICT (org_id, email) DO UPDATE SET status='active', is_admin=true;"#
+                    ON CONFLICT (org_id, email) DO UPDATE SET status='active', is_admin=true;"#,
                 )
                 .bind(domain_part)
                 .bind(&admin_email)
@@ -138,9 +126,7 @@ async fn async_main() {
     // ── NATS JetStream ──────────────────────────────────────────────────
     let nats_url = env_or_local_default("NATS_URL", "nats://localhost:4222");
 
-    let nats_client = async_nats::connect(&nats_url)
-        .await
-        .expect("Failed to connect to NATS");
+    let nats_client = async_nats::connect(&nats_url).await.expect("Failed to connect to NATS");
 
     tracing::info!("✅ Connected to NATS at {}", nats_url);
 
@@ -160,6 +146,9 @@ async fn async_main() {
         nats: NatsService::new(nats_client),
         jwt_secret,
         rate_limiter: crate::auth::RateLimiter::new(),
+        admin_bootstrap_enabled: resolve_admin_bootstrap_enabled(),
+        admin_bootstrap_setup_token: Arc::new(resolve_admin_bootstrap_setup_token()),
+        admin_bootstrap_consumed: Arc::new(AtomicBool::new(false)),
     };
     let test_mode = env_flag("TEST_MODE");
 
@@ -192,10 +181,7 @@ async fn async_main() {
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         // Prevent slow-loris: hard timeout of 30s per request
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(30),
-        ))
+        .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(30)))
         .with_state(state);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
@@ -222,12 +208,38 @@ fn env_or_local_default(name: &str, default: &str) -> String {
 
 fn env_flag(name: &str) -> bool {
     match std::env::var(name) {
-        Ok(value) => matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
+        Ok(value) => {
+            matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+        }
         Err(_) => false,
     }
+}
+
+fn resolve_admin_bootstrap_enabled() -> bool {
+    let enabled = env_flag("ADMIN_BOOTSTRAP_ENABLED");
+    if enabled {
+        tracing::warn!("⚠️ ADMIN_BOOTSTRAP_ENABLED=true: passkey bypass route is active");
+    } else {
+        tracing::info!("✅ Admin bootstrap route disabled by default");
+    }
+    enabled
+}
+
+fn resolve_admin_bootstrap_setup_token() -> Option<String> {
+    let setup_token = std::env::var("ADMIN_BOOTSTRAP_SETUP_TOKEN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    if env_flag("ADMIN_BOOTSTRAP_ENABLED") && setup_token.is_none() {
+        panic!("ADMIN_BOOTSTRAP_SETUP_TOKEN must be set when ADMIN_BOOTSTRAP_ENABLED=true");
+    }
+
+    if !env_flag("ADMIN_BOOTSTRAP_ENABLED") && setup_token.is_some() {
+        tracing::warn!("ADMIN_BOOTSTRAP_SETUP_TOKEN is set, but admin bootstrap route is disabled");
+    }
+
+    setup_token
 }
 
 fn build_allowed_origins(frontend_url: &str) -> Vec<HeaderValue> {
@@ -242,11 +254,7 @@ fn build_allowed_origins(frontend_url: &str) -> Vec<HeaderValue> {
     }
 
     if let Ok(configured) = std::env::var("CORS_ALLOWED_ORIGINS") {
-        for origin in configured
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
+        for origin in configured.split(',').map(str::trim).filter(|value| !value.is_empty()) {
             if let Ok(value) = origin.parse::<HeaderValue>() {
                 origins.push(value);
             }
@@ -273,10 +281,7 @@ async fn health() -> Json<Value> {
 }
 
 async fn health_db(State(state): State<AppState>) -> (axum::http::StatusCode, Json<Value>) {
-    match sqlx::query_scalar::<_, i32>("SELECT 1")
-        .fetch_one(&state.db)
-        .await
-    {
+    match sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&state.db).await {
         Ok(_) => (
             axum::http::StatusCode::OK,
             Json(json!({

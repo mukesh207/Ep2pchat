@@ -24,6 +24,8 @@ const BACKOFF_INITIAL_MS = 1000;
 const BACKOFF_MAX_MS = 30000;
 const BACKOFF_MULTIPLIER = 2;
 const HEARTBEAT_INTERVAL_MS = 25000;
+const WS_PROTOCOL_V1 = "trustline.v1";
+const WS_AUTH_PROTOCOL_PREFIX = "auth.jwt.";
 
 export class TrustlineSocket {
     private ws: WebSocket | null = null;
@@ -72,10 +74,13 @@ export class TrustlineSocket {
         this.setState("CONNECTING");
 
         const url = new URL(this.baseUrl, window.location.href);
-        if (this.currentToken) url.searchParams.set("token", this.currentToken);
         if (this.currentDeviceId) url.searchParams.set("device_id", this.currentDeviceId);
+        const protocols = [WS_PROTOCOL_V1];
+        if (this.currentToken) {
+            protocols.push(`${WS_AUTH_PROTOCOL_PREFIX}${toBase64Url(this.currentToken)}`);
+        }
 
-        this.ws = new WebSocket(url);
+        this.ws = new WebSocket(url, protocols);
 
         this.ws.onopen = () => {
             this.backoffMs = BACKOFF_INITIAL_MS; // reset backoff on success
@@ -191,6 +196,15 @@ export class TrustlineSocket {
 
 function trimTrailingSlash(value: string): string {
     return value.replace(/\/+$/, "");
+}
+
+function toBase64Url(value: string): string {
+    const bytes = new TextEncoder().encode(value);
+    let binary = "";
+    for (const byte of bytes) {
+        binary += String.fromCharCode(byte);
+    }
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 function resolveWebSocketBase(): string {

@@ -85,7 +85,7 @@ export default function App() {
 
   const chatHandlers = useChat({
     localKeys,
-    userId: session?.userId,
+    userId: session?.userId ?? null,
     activeContactId,
     setMessages,
     setLastMessageByContact,

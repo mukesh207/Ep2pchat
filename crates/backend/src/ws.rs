@@ -8,7 +8,7 @@ use ax_ws::{
     response::{IntoResponse, Response},
 };
 use axum as ax_ws;
-use axum::http::StatusCode;
+use axum::http::{header, HeaderMap, StatusCode};
 use base64::Engine;
 use dashmap::DashMap;
 use futures_util::{sink::SinkExt, stream::StreamExt};
@@ -38,9 +38,7 @@ pub struct WsState {
 
 impl WsState {
     pub fn new() -> Self {
-        Self {
-            connections: Arc::new(DashMap::new()),
-        }
+        Self { connections: Arc::new(DashMap::new()) }
     }
 }
 
@@ -48,8 +46,48 @@ impl WsState {
 
 #[derive(Deserialize)]
 pub struct WsQuery {
-    pub token: String,
     pub device_id: Option<Uuid>,
+}
+
+const WS_PROTOCOL_V1: &str = "trustline.v1";
+const WS_AUTH_PROTOCOL_PREFIX: &str = "auth.jwt.";
+
+fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn extract_token_from_subprotocol(headers: &HeaderMap) -> Option<String> {
+    let protocols = headers.get(header::SEC_WEBSOCKET_PROTOCOL)?.to_str().ok()?;
+
+    for item in protocols.split(',').map(str::trim) {
+        let Some(encoded) = item.strip_prefix(WS_AUTH_PROTOCOL_PREFIX) else {
+            continue;
+        };
+        let Ok(raw_token) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded) else {
+            continue;
+        };
+        let Ok(token) = String::from_utf8(raw_token) else {
+            continue;
+        };
+        if !token.trim().is_empty() {
+            return Some(token);
+        }
+    }
+    None
+}
+
+fn has_ws_protocol(headers: &HeaderMap, protocol: &str) -> bool {
+    headers
+        .get(header::SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.split(',').map(str::trim).any(|item| item == protocol))
+        .unwrap_or(false)
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -73,10 +111,7 @@ pub enum WsEnvelope {
     #[serde(rename = "MESSAGE_READ")]
     MessageRead { message_id: Uuid },
     #[serde(rename = "TYPING_EVENT")]
-    TypingEvent {
-        recipient_device_id: Uuid,
-        is_typing: bool,
-    },
+    TypingEvent { recipient_device_id: Uuid, is_typing: bool },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -112,9 +147,15 @@ pub async fn ws_handler(
     ws: WebSocketUpgrade,
     Query(query): Query<WsQuery>,
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Response {
+    let token = extract_bearer_token(&headers).or_else(|| extract_token_from_subprotocol(&headers));
+    let Some(token) = token else {
+        return (StatusCode::UNAUTHORIZED, "Missing authentication token").into_response();
+    };
+
     let token_data = match decode::<Claims>(
-        &query.token,
+        &token,
         &DecodingKey::from_secret(state.jwt_secret.as_bytes()),
         &Validation::default(),
     ) {
@@ -136,12 +177,11 @@ pub async fn ws_handler(
     .await;
 
     let Ok(Some(_)) = device_check else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            "Device is not active for this session",
-        )
-            .into_response();
+        return (StatusCode::UNAUTHORIZED, "Device is not active for this session").into_response();
     };
+
+    let ws =
+        if has_ws_protocol(&headers, WS_PROTOCOL_V1) { ws.protocols([WS_PROTOCOL_V1]) } else { ws };
 
     ws.on_upgrade(move |socket| handle_socket(socket, state, device_id, token_data.claims))
 }
@@ -156,14 +196,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, device_id: Uuid, clai
     let org_id = claims.org_id;
 
     // Register this device in the lock-free DashMap
-    state.ws.connections.insert(
-        device_id,
-        ActiveConnection {
-            tx: tx.clone(),
-            user_id,
-            org_id,
-        },
-    );
+    state.ws.connections.insert(device_id, ActiveConnection { tx: tx.clone(), user_id, org_id });
 
     tracing::info!(
         device_id = %device_id,
@@ -251,18 +284,11 @@ async fn handle_socket(socket: WebSocket, state: AppState, device_id: Uuid, clai
                                     "timestamp": timestamp,
                                 }
                             }),
-                            RoutedEvent::MessageStatus {
-                                message_id,
-                                status,
-                                user_id,
-                            } => json!({
+                            RoutedEvent::MessageStatus { message_id, status, user_id } => json!({
                                 "type": "MESSAGE_STATUS",
                                 "payload": { "message_id": message_id, "status": status, "user_id": user_id }
                             }),
-                            RoutedEvent::Typing {
-                                sender_user_id,
-                                is_typing,
-                            } => json!({
+                            RoutedEvent::Typing { sender_user_id, is_typing } => json!({
                                 "type": "TYPING_EVENT",
                                 "payload": { "sender_user_id": sender_user_id, "is_typing": is_typing }
                             }),
@@ -271,10 +297,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, device_id: Uuid, clai
                                 "payload": { "device_id": device_id }
                             }),
                         };
-                        if nats_tx
-                            .send(Message::Text(ws_msg.to_string().into()))
-                            .is_err()
-                        {
+                        if nats_tx.send(Message::Text(ws_msg.to_string().into())).is_err() {
                             break;
                         }
                     }
@@ -282,10 +305,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, device_id: Uuid, clai
             }
         })
     } else {
-        tracing::warn!(
-            "NATS unavailable, cross-node routing disabled for {}",
-            nats_subject
-        );
+        tracing::warn!("NATS unavailable, cross-node routing disabled for {}", nats_subject);
         tokio::spawn(async {})
     };
 
@@ -393,18 +413,11 @@ fn deliver_event_to_device(state: &AppState, device_id: Uuid, event: RoutedEvent
                 "timestamp": timestamp,
             }
         }),
-        RoutedEvent::MessageStatus {
-            message_id,
-            status,
-            user_id,
-        } => json!({
+        RoutedEvent::MessageStatus { message_id, status, user_id } => json!({
             "type": "MESSAGE_STATUS",
             "payload": { "message_id": message_id, "status": status, "user_id": user_id }
         }),
-        RoutedEvent::Typing {
-            sender_user_id,
-            is_typing,
-        } => json!({
+        RoutedEvent::Typing { sender_user_id, is_typing } => json!({
             "type": "TYPING_EVENT",
             "payload": { "sender_user_id": sender_user_id, "is_typing": is_typing }
         }),
@@ -662,9 +675,7 @@ pub(crate) async fn handle_envelope(
                             "timestamp": timestamp,
                         }
                     });
-                    let _ = sender_conn
-                        .tx
-                        .send(Message::Text(confirm.to_string().into()));
+                    let _ = sender_conn.tx.send(Message::Text(confirm.to_string().into()));
                 }
             }
 
@@ -753,11 +764,7 @@ pub(crate) async fn handle_envelope(
                     }
                 }
                 Ok(None) => {
-                    send_ws_error(
-                        state,
-                        sender_device_id,
-                        WsError::NotFound("Message not found"),
-                    );
+                    send_ws_error(state, sender_device_id, WsError::NotFound("Message not found"));
                     return;
                 }
                 Err(_) => {
@@ -825,11 +832,7 @@ pub(crate) async fn handle_envelope(
                     }
                 }
                 Ok(None) => {
-                    send_ws_error(
-                        state,
-                        sender_device_id,
-                        WsError::NotFound("Message not found"),
-                    );
+                    send_ws_error(state, sender_device_id, WsError::NotFound("Message not found"));
                     return;
                 }
                 Err(_) => {
@@ -865,10 +868,7 @@ pub(crate) async fn handle_envelope(
                 );
             }
         }
-        WsEnvelope::TypingEvent {
-            recipient_device_id,
-            is_typing,
-        } => {
+        WsEnvelope::TypingEvent { recipient_device_id, is_typing } => {
             let (sender_user_id, sender_org_id) = match sender_context(state, sender_device_id) {
                 Ok(ctx) => ctx,
                 Err(err) => {
@@ -886,10 +886,7 @@ pub(crate) async fn handle_envelope(
             deliver_event_to_device(
                 state,
                 recipient_device_id,
-                RoutedEvent::Typing {
-                    sender_user_id,
-                    is_typing,
-                },
+                RoutedEvent::Typing { sender_user_id, is_typing },
             );
         }
     }

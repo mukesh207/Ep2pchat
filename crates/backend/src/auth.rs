@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::Row;
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
@@ -21,7 +22,7 @@ use webauthn_rs::prelude::*;
 const RATE_LIMIT_MAX_REQUESTS: usize = 5;
 const RATE_LIMIT_WINDOW_SECS: u64 = 60;
 
-/// In-memory IP-based rate limiter using DashMap for lock-free concurrent access.
+/// In-memory key-based rate limiter using DashMap for lock-free concurrent access.
 #[derive(Clone)]
 pub struct RateLimiter {
     attempts: Arc<DashMap<String, Vec<Instant>>>,
@@ -29,9 +30,7 @@ pub struct RateLimiter {
 
 impl RateLimiter {
     pub fn new() -> Self {
-        Self {
-            attempts: Arc::new(DashMap::new()),
-        }
+        Self { attempts: Arc::new(DashMap::new()) }
     }
 
     /// Returns true if the request is allowed, false if rate-limited.
@@ -75,10 +74,7 @@ impl FromRequestParts<AppState> for AuthContext {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let auth_header = parts
-            .headers
-            .get("Authorization")
-            .and_then(|h| h.to_str().ok());
+        let auth_header = parts.headers.get("Authorization").and_then(|h| h.to_str().ok());
         if let Some(auth_header) = auth_header {
             if let Some(token) = auth_header.strip_prefix("Bearer ") {
                 let validation = Validation::default();
@@ -88,16 +84,11 @@ impl FromRequestParts<AppState> for AuthContext {
                     &validation,
                 );
                 if let Ok(data) = token_data {
-                    return Ok(AuthContext {
-                        claims: data.claims,
-                    });
+                    return Ok(AuthContext { claims: data.claims });
                 }
             }
         }
-        Err((
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"error": "Unauthorized"})),
-        ))
+        Err((StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized"}))))
     }
 }
 
@@ -105,10 +96,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/request-access", post(request_access))
         .route("/register-passkey/begin", post(register_passkey_begin))
-        .route(
-            "/register-passkey/complete",
-            post(register_passkey_complete),
-        )
+        .route("/register-passkey/complete", post(register_passkey_complete))
         .route("/login/begin", post(login_begin))
         .route("/login/complete", post(login_complete))
         .route("/admin-bootstrap", post(admin_bootstrap))
@@ -120,9 +108,28 @@ pub fn router() -> Router<AppState> {
 /// is not available (e.g., Linux Tauri desktop).
 async fn admin_bootstrap(
     State(state): State<AppState>,
-    Json(payload): Json<RequestAccessPayload>,
+    Json(payload): Json<AdminBootstrapPayload>,
 ) -> Json<Value> {
     let email = payload.email.trim().to_lowercase();
+    let provided_setup_token = payload.setup_token.unwrap_or_default();
+
+    if !state.admin_bootstrap_enabled {
+        return Json(json!({"error": "Admin bootstrap is disabled"}));
+    }
+
+    let expected_setup_token = match state.admin_bootstrap_setup_token.as_ref() {
+        Some(token) => token,
+        None => {
+            tracing::error!("ADMIN_BOOTSTRAP_ENABLED=true but setup token is not configured");
+            return Json(json!({"error": "Admin bootstrap is not configured"}));
+        }
+    };
+
+    if provided_setup_token.trim().is_empty() || provided_setup_token.trim() != expected_setup_token
+    {
+        tracing::warn!("⚠️ Admin bootstrap rejected due to invalid setup token");
+        return Json(json!({"error": "Admin bootstrap credentials invalid or unavailable"}));
+    }
 
     // Rate limit: 5 attempts per minute per email
     if !state.rate_limiter.check(&format!("admin-bootstrap:{}", email)) {
@@ -131,26 +138,24 @@ async fn admin_bootstrap(
     }
 
     // Only allow the configured admin email
-    let admin_email = std::env::var("ADMIN_EMAIL")
-        .unwrap_or_default()
-        .trim()
-        .to_lowercase();
+    let admin_email = std::env::var("ADMIN_EMAIL").unwrap_or_default().trim().to_lowercase();
 
     if admin_email.is_empty() || email != admin_email {
         return Json(json!({"error": "Admin bootstrap is not available for this email"}));
     }
 
     // Look up the admin user
-    let row = sqlx::query(
-        "SELECT u.id, u.org_id, u.is_admin, u.status FROM users u WHERE u.email = $1"
-    )
-    .bind(&email)
-    .fetch_optional(&state.db)
-    .await;
+    let row =
+        sqlx::query("SELECT u.id, u.org_id, u.is_admin, u.status FROM users u WHERE u.email = $1")
+            .bind(&email)
+            .fetch_optional(&state.db)
+            .await;
 
     let row = match row {
         Ok(Some(r)) => r,
-        Ok(None) => return Json(json!({"error": "Admin user not found. Restart the backend to seed."})),
+        Ok(None) => {
+            return Json(json!({"error": "Admin user not found. Restart the backend to seed."}))
+        }
         Err(e) => return Json(json!({"error": format!("Database error: {}", e)})),
     };
 
@@ -163,17 +168,16 @@ async fn admin_bootstrap(
         return Json(json!({"error": "User is not an active admin"}));
     }
 
+    if state.admin_bootstrap_consumed.swap(true, Ordering::AcqRel) {
+        return Json(json!({"error": "Admin bootstrap has already been used"}));
+    }
+
     let expiration = chrono::Utc::now()
         .checked_add_signed(chrono::Duration::hours(24))
         .expect("valid timestamp")
         .timestamp() as usize;
 
-    let claims = Claims {
-        sub: user_id,
-        org_id,
-        is_admin: true,
-        exp: expiration,
-    };
+    let claims = Claims { sub: user_id, org_id, is_admin: true, exp: expiration };
 
     let token = match encode(
         &Header::default(),
@@ -181,7 +185,10 @@ async fn admin_bootstrap(
         &EncodingKey::from_secret(state.jwt_secret.as_bytes()),
     ) {
         Ok(t) => t,
-        Err(e) => return Json(json!({"error": format!("Failed to create token: {}", e)})),
+        Err(e) => {
+            state.admin_bootstrap_consumed.store(false, Ordering::Release);
+            return Json(json!({"error": format!("Failed to create token: {}", e)}));
+        }
     };
 
     tracing::info!("✅ Admin bootstrap: issued JWT for {}", email);
@@ -197,6 +204,12 @@ async fn admin_bootstrap(
 #[derive(Deserialize)]
 pub struct RequestAccessPayload {
     pub email: String,
+}
+
+#[derive(Deserialize)]
+pub struct AdminBootstrapPayload {
+    pub email: String,
+    pub setup_token: Option<String>,
 }
 
 pub async fn request_access(
@@ -391,9 +404,7 @@ pub async fn register_passkey_complete(
         Err(_) => return Json(json!({"error": "Invalid session state"})),
     };
 
-    let passkey = match state
-        .webauthn
-        .finish_passkey_registration(&payload.credential, &reg_state)
+    let passkey = match state.webauthn.finish_passkey_registration(&payload.credential, &reg_state)
     {
         Ok(p) => p,
         Err(e) => return Json(json!({"error": format!("Registration failed: {:?}", e)})),
@@ -547,13 +558,11 @@ pub async fn login_complete(
         Err(_) => return Json(json!({"error": "Invalid session state"})),
     };
 
-    let auth_verify = match state
-        .webauthn
-        .finish_passkey_authentication(&payload.credential, &auth_state)
-    {
-        Ok(r) => r,
-        Err(e) => return Json(json!({"error": format!("Authentication failed: {:?}", e)})),
-    };
+    let auth_verify =
+        match state.webauthn.finish_passkey_authentication(&payload.credential, &auth_state) {
+            Ok(r) => r,
+            Err(e) => return Json(json!({"error": format!("Authentication failed: {:?}", e)})),
+        };
 
     let cred_id = auth_verify.cred_id().clone();
     let passkey_json = serde_json::to_value(&auth_verify).unwrap();
@@ -584,21 +593,14 @@ pub async fn login_complete(
         _ => return Json(json!({"error": "User not found or DB err"})),
     };
 
-    let is_admin: bool = user_record
-        .get::<Option<bool>, _>("is_admin")
-        .unwrap_or(false);
+    let is_admin: bool = user_record.get::<Option<bool>, _>("is_admin").unwrap_or(false);
 
     let expiration = chrono::Utc::now()
         .checked_add_signed(chrono::Duration::hours(24))
         .expect("valid timestamp")
         .timestamp() as usize;
 
-    let claims = Claims {
-        sub: payload.user_id,
-        org_id,
-        is_admin,
-        exp: expiration,
-    };
+    let claims = Claims { sub: payload.user_id, org_id, is_admin, exp: expiration };
 
     let token = match encode(
         &Header::default(),

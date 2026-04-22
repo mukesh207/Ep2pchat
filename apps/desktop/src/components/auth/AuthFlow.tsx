@@ -50,16 +50,18 @@ export default function AuthFlow({
       setUserId(res.user_id);
       setAccessCode(res.access_code || "");
       if (res.status === "active") {
-        // Try admin bootstrap first — skip passkey entirely
-        try {
-          const bootstrapRes = await api.adminBootstrap(email);
-          if (bootstrapRes.token) {
-            setView("LOADING");
-            await completeSetup(bootstrapRes.token, res.user_id, bootstrapRes.org_id, true);
-            return;
+        // Try admin bootstrap first when a setup token is configured.
+        if (api.canAttemptAdminBootstrap()) {
+          try {
+            const bootstrapRes = await api.adminBootstrap(email);
+            if (bootstrapRes.token) {
+              setView("LOADING");
+              await completeSetup(bootstrapRes.token, res.user_id, bootstrapRes.org_id, true);
+              return;
+            }
+          } catch {
+            // Not the configured admin or bootstrap is unavailable — continue with passkey login.
           }
-        } catch {
-          // Not the configured admin — continue with passkey login
         }
         await handleLogin(email, res.user_id);
       } else {
@@ -135,15 +137,17 @@ export default function AuthFlow({
     if (!userId) return;
     setView("LOADING");
     try {
-      // Try admin bootstrap first (bypasses WebAuthn for configured admin)
-      try {
-        const bootstrapRes = await api.adminBootstrap(email);
-        if (bootstrapRes.token) {
-          await completeSetup(bootstrapRes.token, userId, bootstrapRes.org_id, true);
-          return;
+      // Try admin bootstrap first when a setup token is configured.
+      if (api.canAttemptAdminBootstrap()) {
+        try {
+          const bootstrapRes = await api.adminBootstrap(email);
+          if (bootstrapRes.token) {
+            await completeSetup(bootstrapRes.token, userId, bootstrapRes.org_id, true);
+            return;
+          }
+        } catch {
+          // Not the configured admin or bootstrap is unavailable — continue with normal flow.
         }
-      } catch {
-        // Not the admin or bootstrap not available — continue with normal flow
       }
 
       // Normal WebAuthn flow for non-admin users

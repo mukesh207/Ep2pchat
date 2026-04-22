@@ -66,7 +66,7 @@ Data pre-processing involved a structured five-step procedure: cleaning irreleva
 
 * **Frontend Interfaces**: Next.js for web endpoints and Tauri for the lightweight, secure desktop application.
 * **Backend & Relay**: Rust (compiled to WASM) for core client-side cryptography, and Go for handling the high-concurrency WebSocket network relay.
-* **Local Data**: SQLite with FTS5 virtual tables to allow secure, localized full-text searches.
+* **Backend & Relay**: Rust (Axum + Tokio) for handling the high-concurrency WebSocket network relay, and Rust/Tauri for core client-side cryptography.
 * **Libraries**: **Yjs** for CRDT-based synchronized state management, Web Crypto API and Libsodium for client-side AES-GCM encryption and X3DH handshakes.
 
 #### **5\. Hardware Requirements**
@@ -127,7 +127,7 @@ The architecture fundamentally follows a modular three-tier design, incorporatin
                          ↕ (Encrypted Blobs Only)
 +-------------------------------------------------+
 |             Tier 3: Blind Relay                 |
-|          [ Go WebSocket Server ]                |
+|         [ Rust WebSocket Server ]               |
 +-------------------------------------------------+
 ```
 
@@ -196,7 +196,3 @@ This research concretely demonstrates the feasibility and superiority of **Trust
 17. A Novel Approach For Secured Decentralised Data Protection Vault - ResearchGate, https://www.researchgate.net/publication/372551771_A_Novel_Approach_For_Secured_Decentralised_Data_Protection_Vault
 18. IEEE Conference Paper Format and Structure | PDF | Abstract (Summary) - Scribd, https://www.scribd.com/document/943352194/IEEE-Conference-Paper-Format-and-Structure
 19. Different performance of openssl speed on the same hardware with AES 256 (EVP and non EVP API) - Security Stack Exchange, https://security.stackexchange.com/questions/35036/different-performance-of-openssl-speed-on-the-same-hardware-with-aes-256-evp-an
-
-
-
-
