@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Trustline IEEE Diagrams - PNG Exporter</title>
+    <!-- Load Mermaid -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f9;
+            margin: 40px;
+            color: #333;
+        }
+        h1 {
+            border-bottom: 2px solid #ccc;
+            padding-bottom: 10px;
+        }
+        .diagram-container {
+            background-color: #fff;
+            border: 1px solid #ddd;
+            padding: 20px;
+            margin-bottom: 30px;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .diagram-container h3 {
+            margin-top: 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .btn-download {
+            background-color: #0056b3;
+            color: #fff;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            text-decoration: none;
+        }
+        .btn-download:hover {
+            background-color: #004494;
+        }
+        .mermaid {
+            overflow-x: auto;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Trustline Diagram PNG Exporter</h1>
+    <p>Since the markdown viewer does not allow saving the images directly, use this utility page. Once the diagrams render below, click the <strong>Download PNG</strong> button next to each one to save them.</p>
+
+    <!-- DIAGRAM 1 -->
+    <div class="diagram-container">
+        <h3>1. CRDT Synchronization Flow <button class="btn-download" onclick="downloadPNG('diag1', '1_CRDT_Flow.png')">Download PNG</button></h3>
+        <div class="mermaid" id="diag1">
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#ffffff', 'primaryBorderColor': '#000000', 'primaryTextColor': '#000000', 'lineColor': '#000000', 'textColor': '#000000', 'fontFamily': 'Times New Roman'}}}%%
+sequenceDiagram
+    participant A as USER A
+    participant S as BLIND SERVER (RELAY)
+    participant B as USER B
+
+    Note over A: 1. Edit (UI)<br/>2. Yjs CRDT Engine (Generate Delta)<br/>3. Tauri Rust (Encrypt with Ratchet Key)
+    A->>S: 4. WebSocket Send (Encrypted)
+    Note over S: Routes by ID (No Decryption)
+    S->>B: 4. WebSocket Relay
+    Note over B: 5. Tauri Rust (Decrypt)<br/>6. Yjs CRDT Engine (Merge)<br/>7. Update UI (Render)
+    A-->>B: SUCCESS: BOTH DEVICES SYNCED IN ~110ms
+        </div>
+    </div>
+
+    <!-- DIAGRAM 2 -->
+    <div class="diagram-container">
+        <h3>2. Zero-Knowledge "Blind Router" Logic <button class="btn-download" onclick="downloadPNG('diag2', '2_Blind_Router.png')">Download PNG</button></h3>
+        <div class="mermaid" id="diag2">
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#ffffff', 'primaryBorderColor': '#000000', 'primaryTextColor': '#000000', 'lineColor': '#000000', 'textColor': '#000000', 'fontFamily': 'Times New Roman'}}}%%
+flowchart TD
+    subgraph Client ["CLIENT DEVICE (Secure)"]
+        UI["User Interface (UI)<br/>(React)"]
+        TR["Tauri Rust Runtime<br/>(Crypto Operations)"]
+        DB["SQLCipher Vault<br/>(Local Decrypted DB)"]
+        UI --> TR
+        TR --> DB
+    end
+
+    subgraph Backend ["BACKEND (Blind)"]
+        RA["Rust / Axum<br/>Relay Server"]
+        NATS["NATS JetStream<br/>(Msg Routing)"]
+        PG["PostgreSQL DB<br/>(RLS Isolated)"]
+        RA --> NATS
+        NATS --> PG
+    end
+
+    TR <-->|"Encrypted Blobs<br/>(Untrusted Network)"| RA
+    DB -.->|"Logical Sync<br/>(Encrypted Data)"| PG
+
+    classDef default fill:#fff,stroke:#000,stroke-width:1.5px,color:#000;
+    style Client fill:#ffffff,stroke:#000,stroke-width:2px,color:#000;
+    style Backend fill:#ffffff,stroke:#000,stroke-width:2px,color:#000;
+        </div>
+    </div>
+
+    <!-- DIAGRAM 3 -->
+    <div class="diagram-container">
+        <h3>3. X3DH Key Agreement <button class="btn-download" onclick="downloadPNG('diag3', '3_X3DH_Key_Agreement.png')">Download PNG</button></h3>
+        <div class="mermaid" id="diag3">
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#ffffff', 'primaryBorderColor': '#000000', 'primaryTextColor': '#000000', 'lineColor': '#000000', 'textColor': '#000000', 'fontFamily': 'Times New Roman'}}}%%
+sequenceDiagram
+    participant A as ALICE (SENDER)
+    participant S as TRUSTLINE SERVER
+    participant B as BOB (RECIPIENT)
+
+    B->>S: 1. Upload Pre-Keys (IK_b, SPK_b, OPKs)
+    A->>S: 2. Fetch Bob's Keys
+    S-->>A: (IK_b, SPK_b, OPK_b1)
+    
+    Note over A: 3. LOCAL MATH<br/>Generate EK_a<br/>DH1 = (IK_a, SPK_b)<br/>DH2 = (EK_a, IK_b)<br/>DH3 = (EK_a, SPK_b)<br/>DH4 = (EK_a, OPK_b1)<br/>SECRET = HKDF(DH1-4)
+    
+    A->>S: 4. Encrypted Msg (Ciphertext + EK_a)
+    S->>B: 5. Blind Route
+    
+    Note over B: 6. LOCAL MATH<br/>Derive SAME Secret<br/>Decrypt & Sync
+        </div>
+    </div>
+
+    <!-- DIAGRAM 4 -->
+    <div class="diagram-container">
+        <h3>4. The Double Ratchet Protocol <button class="btn-download" onclick="downloadPNG('diag4', '4_Double_Ratchet.png')">Download PNG</button></h3>
+        <div class="mermaid" id="diag4">
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#ffffff', 'primaryBorderColor': '#000000', 'primaryTextColor': '#000000', 'lineColor': '#000000', 'textColor': '#000000', 'fontFamily': 'Times New Roman'}}}%%
+flowchart TD
+    RC["ROOT CHAIN"]
+    DH["DH STEP<br/>(New DH exchange per round-trip)"]
+    SC["SENDING CHAIN"]
+    RECC["RECEIVING CHAIN"]
+    KDFS["KDF-SEND (n)"]
+    KDFR["KDF-RECV (m)"]
+    MK1["MESSAGE KEY<br/>(One-Time)"]
+    MK2["MESSAGE KEY<br/>(One-Time)"]
+
+    RC --> DH
+    DH -->|Advance| SC
+    DH -->|Advance| RECC
+    SC --> KDFS
+    RECC --> KDFR
+    KDFS --> MK1
+    KDFR --> MK2
+
+    classDef default fill:#fff,stroke:#000,stroke-width:1.5px,color:#000;
+        </div>
+    </div>
+
+    <!-- DIAGRAM 5 -->
+    <div class="diagram-container">
+        <h3>5. WebAuthn Passwordless Auth <button class="btn-download" onclick="downloadPNG('diag5', '5_WebAuthn.png')">Download PNG</button></h3>
+        <div class="mermaid" id="diag5">
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#ffffff', 'primaryBorderColor': '#000000', 'primaryTextColor': '#000000', 'lineColor': '#000000', 'textColor': '#000000', 'fontFamily': 'Times New Roman'}}}%%
+sequenceDiagram
+    participant UI as Browser/Tauri UI
+    participant SE as SECURE ENCLAVE (Hardware)
+    participant BE as TRUSTLINE BACKEND
+
+    BE->>UI: 1. Challenge
+    UI->>SE: Request Biometric Check
+    SE-->>UI: Biometric Check Passed
+    UI->>BE: 2. Signed Auth
+    Note over BE: 3. VERIFY
+    BE-->>UI: 4. JWT Issued
+        </div>
+    </div>
+
+    <!-- DIAGRAM 6 -->
+    <div class="diagram-container">
+        <h3>6. PostgreSQL Row-Level Security (RLS) <button class="btn-download" onclick="downloadPNG('diag6', '6_PostgreSQL_RLS.png')">Download PNG</button></h3>
+        <div class="mermaid" id="diag6">
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#ffffff', 'primaryBorderColor': '#000000', 'primaryTextColor': '#000000', 'lineColor': '#000000', 'textColor': '#000000', 'fontFamily': 'Times New Roman'}}}%%
+flowchart TD
+    IQ["INCOMING QUERY"]
+    SL["SET LOCAL app.current_org_id<br/>(Assigned per session/request)"]
+    PE["POSTGRES ENGINE<br/>(RLS Enforcement)"]
+    
+    subgraph DB ["DATABASE ROWS"]
+        direction TB
+        OA["[Org A Data]"]
+        OB["[Org B Data]"]
+    end
+
+    IQ --> SL
+    SL --> PE
+    PE -->|ACCESS GRANTED| OA
+    PE -.->|ACCESS DENIED| OB
+
+    style OA fill:#fff,stroke:#000,stroke-width:1.5px,color:#000
+    style OB fill:#fff,stroke:#000,stroke-width:1.5px,stroke-dasharray: 5 5,color:#000
+    classDef default fill:#fff,stroke:#000,stroke-width:1.5px,color:#000;
+        </div>
+    </div>
+
+    <script>
+        // Initialize mermaid
+        mermaid.initialize({ startOnLoad: true });
+
+        // Function to extract SVG and render as PNG
+        function downloadPNG(containerId, filename) {
+            const container = document.getElementById(containerId);
+            const svg = container.querySelector('svg');
+            
+            if (!svg) {
+                alert("The diagram has not rendered yet. Please wait a moment.");
+                return;
+            }
+
+            // Create a canvas
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            
+            // Serialize SVG
+            const xml = new XMLSerializer().serializeToString(svg);
+            // Ensure proper XML namespaces are included
+            const svg64 = btoa(unescape(encodeURIComponent(xml)));
+            const b64Start = 'data:image/svg+xml;base64,';
+            const image64 = b64Start + svg64;
+
+            // Get SVG dimensions
+            const rect = svg.getBoundingClientRect();
+            // Create high-res scale (x3) for crisp printing
+            const scale = 3; 
+            canvas.width = rect.width * scale;
+            canvas.height = rect.height * scale;
+
+            const img = new Image();
+            img.onload = function() {
+                // Fill white background for the PNG
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                
+                // Draw image scaled up
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                
+                // Convert to PNG and trigger download
+                const pngData = canvas.toDataURL("image/png");
+                const a = document.createElement("a");
+                a.download = filename;
+                a.href = pngData;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            };
+            img.src = image64;
+        }
+    </script>
+</body>
+</html>

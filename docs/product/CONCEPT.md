@@ -41,15 +41,15 @@ Imagine a highly secure corporate office building:
 ### C. Advanced Encryption & Real-Time Messaging
 * **True End-to-End Encryption (E2EE):** Using state-of-the-art cryptographic ratcheting algorithms. Every single message is encrypted with a unique, one-time key. 
 * **Forward Secrecy & Post-Compromise Security:** Even if an attacker somehow breaches a device today, they cannot read messages sent yesterday, nor can they eavesdrop indefinitely into the future.
-* **Instant Communication:** Typing indicators, real-time read receipts, and rapid message delivery.
-* **Out-of-Order Handling:** Intelligent syncing ensures that if a user goes offline and comes back, they receive all missed messages in the exact order they were sent.
+*   **Instant Communication:** Typing indicators, real-time read receipts, and rapid message delivery using NATS JetStream.
+*   **Offline Message Replay:** Intelligent syncing ensures that if a user goes offline and comes back, they receive all missed messages from the database securely replayed upon reconnection.
 
 ### D. Administrative & Operational Controls
 * **System Dashboard & Health:** High-level monitoring of server uptime, active connections, and resource usage.
 * **Audit Logging:** Immutable ledgers tracking every critical administrative action (like approving a user or revoking a device) for compliance and forensic review.
 * **Encrypted Moderation:** Users can report abusive messages. Only then is the specific reported content cleanly exposed to the admin for review—the admin cannot arbitrarily browse other encrypted chats.
 * **Automated Data Lifecycle:** Admins can enforce retention policies, ensuring old encrypted blobs and connection logs are securely wiped after a predefined threshold (e.g., 30 days).
-* **Zero-Downtime Maintenance:** The system is built to be upgraded efficiently without taking the communication network offline for employees.
+*   **Zero-Downtime Maintenance:** The system is built to be upgraded efficiently using Docker and Traefik deployments without taking the communication network offline for employees.
 
 ## 6. Future Capabilities Roadmap
 * **Ephemeral/Disappearing Rooms:** Chat rooms where messages self-destruct on all devices immediately after being read.

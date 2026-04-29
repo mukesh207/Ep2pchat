@@ -64,10 +64,10 @@ Data pre-processing involved a structured five-step procedure: cleaning irreleva
 
 #### **4\. Tools and Technologies Used**
 
-* **Frontend Interfaces**: Next.js for web endpoints and Tauri for the lightweight, secure desktop application.
-* **Backend & Relay**: Rust (compiled to WASM) for core client-side cryptography, and Go for handling the high-concurrency WebSocket network relay.
-* **Backend & Relay**: Rust (Axum + Tokio) for handling the high-concurrency WebSocket network relay, and Rust/Tauri for core client-side cryptography.
-* **Libraries**: **Yjs** for CRDT-based synchronized state management, Web Crypto API and Libsodium for client-side AES-GCM encryption and X3DH handshakes.
+* **Frontend Interfaces**: React 19 for the highly responsive, secure desktop application (wrapped in Tauri v2).
+* **Backend & Relay**: Rust (Axum + Tokio) for handling the high-concurrency WebSocket network relay and NATS JetStream distributed routing.
+* **Client Cryptography**: Rust (`crypto_core`) running locally via Tauri IPC for X3DH handshakes and Double Ratchet state management.
+* **Libraries**: **Yjs** for CRDT-based synchronized state management, Libsodium for cryptographic primitives, and SQLCipher for local vault storage.
 
 #### **5\. Hardware Requirements**
 
@@ -89,13 +89,13 @@ Trustline utilizes a heavily optimized hybrid cryptographic and synchronization 
 [Yjs CRDT Engine] Resolves concurrency and emits state update
      │
      ▼
-[WASM Crypto Core] Derives key (Argon2id) and Encrypts payload (AES-GCM)
+[Tauri IPC Crypto Core] Derives key (Argon2id) and Encrypts payload (AES-GCM)
      │
      ▼
-[WebSocket Relay] Blindly routes encrypted blob to network
+[Rust WebSocket Relay] Blindly routes encrypted blob to network via NATS
      │
      ▼
-[WASM Crypto Core] Receives & Decrypts incoming blob locally
+[Tauri IPC Crypto Core] Receives & Decrypts incoming blob locally
      │
      ▼
 [Yjs CRDT Engine] Integrates external update to local state
@@ -117,12 +117,12 @@ The architecture fundamentally follows a modular three-tier design, incorporatin
 ```text
 +-------------------------------------------------+
 |               Tier 1: Client UI                 |
-|   [ Next.js + Tauri ] <---> [ Local SQLite ]    |
+|  [ React 19 + Tauri v2 ] <---> [ SQLCipher ]    |
 +-------------------------------------------------+
                          ↕
 +-------------------------------------------------+
 |         Tier 2: Cryptographic Barrier           |
-|  [ Rust WASM ] <---> [ Argon2id & AES-GCM ]     |
+|  [ Tauri IPC ] <---> [ Argon2id & AES-GCM ]     |
 +-------------------------------------------------+
                          ↕ (Encrypted Blobs Only)
 +-------------------------------------------------+
@@ -142,9 +142,9 @@ Building the Trustline platform followed a structured, deeply isolated workflow 
         ↓
 [2. Core Cryptography (Argon2id/AES)] 
         ↓ (X3DH & OTPK Isolation)
-[3. Blind Sync Relay (WebSockets)]
+[3. Blind Sync Relay (Axum WebSockets + NATS)]
         ↓ (WebSocket Integration)
-[4. Local Indexed Search (SQLite FTS5)]
+[4. Local Indexed Search (SQLCipher FTS5)]
         ↓
 [5. Security Hardening (Shamir's Secret Sharing)]
 ```

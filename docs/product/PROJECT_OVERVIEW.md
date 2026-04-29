@@ -17,16 +17,17 @@ The primary goal of Trustline is to provide a seamless, modern chat experience w
 
 ### Backend (The "Mailroom")
 *   **Language:** Rust (1.80+)
-*   **Framework:** [Axum](https://github.com/tokio-rs/axum) with [Tokio](https://tokio.rs/) for high-concurrency asynchronous task handling.
+*   **Framework:** [Axum 0.8](https://github.com/tokio-rs/axum) with [Tokio](https://tokio.rs/) for high-concurrency asynchronous task handling.
 *   **Database:** PostgreSQL with [SQLx](https://github.com/launchbadge/sqlx) (using RLS for multi-tenancy).
 *   **Message Broker:** [NATS JetStream](https://nats.io/) for lightweight, high-performance distributed messaging.
-*   **Containerization:** Docker & Docker Compose.
+*   **Containerization:** Docker & Docker Compose (with Traefik TLS in production).
 
 ### Desktop Client (The "Workspace")
-*   **Framework:** [Tauri v2](https://tauri.app/) (Rust-based core) + [React](https://reactjs.org/) (TypeScript).
+*   **Framework:** [Tauri v2](https://tauri.app/) (Rust-based core) + [React 19](https://reactjs.org/) (TypeScript 5).
 *   **State Management:** React hooks and context.
-*   **Local Storage:** Secure local SQLite database for message history and private keys (never leaves the device).
-*   **Styling:** Modern, high-fidelity UI (Dark mode first).
+*   **Local Storage:** SQLCipher encrypted local vault with AES-GCM and FTS5 search (never leaves the device).
+*   **Styling:** Modern, high-fidelity UI via Tailwind CSS 4.
+*   **Testing:** Playwright E2E integration tests.
 
 ### Cryptography (The "Locked Briefcases")
 *   **Protocol:** [Signal Protocol](https://getsignal.org/docs/) implementation (Double Ratchet + X3DH).
@@ -41,6 +42,7 @@ The primary goal of Trustline is to provide a seamless, modern chat experience w
 2.  **Handshake (X3DH):** Sender fetches recipient's public pre-keys from the server to establish a shared secret without needing the recipient to be online.
 3.  **Messaging (Double Ratchet):** Every message is encrypted with a unique, one-time key derived from the shared secret, providing **Forward Secrecy** and **Post-Compromise Security**.
 4.  **Blind Routing:** The backend receives an encrypted blob and a `recipient_device_id`, then routes it via NATS to the active WebSocket or stores it for asynchronous delivery.
+5.  **Offline Replay:** Messages to offline users are securely persisted by the router and accurately replayed on reconnect.
 
 ---
 

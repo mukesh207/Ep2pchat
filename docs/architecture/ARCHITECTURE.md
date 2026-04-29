@@ -18,6 +18,8 @@ The backend architecture focuses on high-concurrency, memory safety, and acting 
     *   *Why?* Far lighter and faster than Kafka. NATS is designed for distributed, secure, multi-tenant communications. It perfectly fits the model of routing encrypted blobs with ephemeral metadata.
 *   **Primary Database (User/Org Metadata):** **PostgreSQL**
     *   *Why?* Rock-solid reliability. We will heavily utilize Postges' **Row-Level Security (RLS)** to enforce tenant isolation at the database layer (making cross-tenant leakage virtually impossible).
+*   **Testing & CI/CD Pipelines:** **Playwright & GitHub Actions**
+    *   *Why?* End-to-end integration tests explicitly verifying WebSocket connections, multi-tenant boundaries, and message delivery to catch regressions.
 
 ## 2. Advanced Cryptography (The "Locked Briefcases")
 
@@ -43,9 +45,7 @@ Passwords are the weakest link and will be completely eliminated from the entire
 Client-side execution mapping directly onto bare-metal hardware features is critical for both snappy UI experiences and cryptographic operations.
 
 *   **Desktop Applications (Windows / Mac / Linux):** **Tauri + React/Svelte**
-    *   *Why?* Electron is bloated and has a large attack surface. Tauri uses the OS's native webview and runs a lightweight Rust backend locally. This gives the application system-level capabilities (like secure local storage) with maximum safety.
-*   **Web Application:** **Next.js (React) or SvelteKit** 
-    *   *Why?* Highly performant frameworks that support strict Content Security Policies (CSP) and optimized delivery.
+    *   *Why?* Electron is bloated and has a large attack surface. Tauri v2 uses the OS's native webview and runs a lightweight Rust backend locally. This gives the application system-level capabilities (like secure local storage via SQLCipher + FTS5) with maximum safety.
 *   **Mobile Applications (iOS / Android):** **React Native (with JSI/Turbomodules) or Native (Swift/Kotlin)**
     *   *Why?* To bridge directly into native cryptography engines. We will use native modules heavily so mathematical operations aren't bottlenecked by the JavaScript thread.
 

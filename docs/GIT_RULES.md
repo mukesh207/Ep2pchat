@@ -17,6 +17,7 @@ To maintain the cryptographic integrity and high-assurance security of Trustline
 *   **100% Test Coverage:** Mandatory for cryptographic/security modules.
 *   **Security Audits:** `cargo audit` and `npm audit` must pass.
 *   **Linting:** `cargo clippy` and strict ESLint must have zero warnings.
+*   **Integration Tests:** Playwright E2E and multi-tenant isolation tests must pass.
 *   **Fuzzing:** Core API and WebSocket handlers are subjected to automated fuzzing.
 
 ## 4. Security Hygiene

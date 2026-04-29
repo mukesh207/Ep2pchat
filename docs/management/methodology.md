@@ -29,7 +29,7 @@ Traditional "move fast and break things" Agile is too dangerous for applied cryp
 *   **Led By:** **Principal DevSecOps Architect** & **Offensive Security Lead**.
 *   **Mandatory CI Checks:** The **DevSecOps Architect** enforces 100% test coverage on cryptographic modules, and configures `cargo audit`/`npm audit` to instantly fail the build if a supply-chain vulnerability is detected.
 *   **Continuous Fuzzing:** The **Offensive Security Lead** scripts continuous fuzzers (feeding millions of malformed, random bytes into the Axum API and WebSocket endpoints) running in CI to ensure the server gracefully drops bad packets.
-*   **Static Code Analysis:** Rust `clippy` and strict TypeScript ESLint rules are enforced at the compiler level.
+*   **Static Code Analysis:** Rust `clippy` and strict TypeScript ESLint rules are enforced at the compiler level. Automated end-to-end tests via Playwright run continuously on GitHub Actions.
 
 ## Phase 4: Strict Peer Review & Formal Verification
 *No human can merge their own code into the main branch.*

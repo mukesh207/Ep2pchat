@@ -20,8 +20,8 @@ Below is the breakdown of the highly specialized, world-class talent required to
 
 ### 3. Lead Desktop & Client Architect (Tauri / High-Fidelity React)
 *   **The Mandate:** Translate a tactical, high-fidelity Cyberpunk UI into a blazing-fast native desktop application that seamlessly manages complex cryptographic states locally without exposing keys to the V8 engine heap any longer than absolutely necessary.
-*   **Responsibilities:** Build and maintain the native desktop client using the Tauri framework and React. They will craft intricate, high-performance CSS animations (glassmorphism, scan-lines, dynamic ticking), orchestrate local state management securely (IndexedDB with local encryption layers), and meticulously manage Tauri's IPC (Inter-Process Communication) to guarantee safe boundaries between the Rust core and the React webview.
-*   **Required Skills:** Mastery of TypeScript, React internals, and Vite. Elite CSS engineering capabilities (animations, performance profiling). Advanced knowledge of Tauri/Electron architecture, Rust IPC bindings, and browser security models.
+*   **Responsibilities:** Build and maintain the native desktop client using Tauri v2 and React 19. They will craft intricate, high-performance CSS animations, orchestrate local state management securely (SQLCipher with AES-GCM and FTS5 search), and meticulously manage Tauri's IPC (Inter-Process Communication) to guarantee safe boundaries between the Rust core and the React webview.
+*   **Required Skills:** Mastery of TypeScript 5, React 19 internals, and Vite 7. Elite CSS engineering capabilities (animations, performance profiling via Tailwind CSS 4). Advanced knowledge of Tauri architecture, Rust IPC bindings, and browser security models.
 *   **Experience Level:** 7+ years in frontend engineering, specifically with complex, state-heavy SPA applications and native desktop wrappers.
 
 ### 4. Principal DevSecOps & Availability Architect
