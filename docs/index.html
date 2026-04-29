@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EncryptedChats Documentation</title>
+    
+    <!-- GitHub Markdown CSS -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.5.1/github-markdown.min.css">
+    
+    <!-- Highlight.js for code syntax highlighting -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+    
+    <style>
+        body {
+            box-sizing: border-box;
+            min-width: 200px;
+            max-width: 980px;
+            margin: 0 auto;
+            padding: 45px;
+            font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif,"Apple Color Emoji","Segoe UI Emoji";
+        }
+        @media (max-width: 767px) {
+            body {
+                padding: 15px;
+            }
+        }
+        .nav-header {
+            margin-bottom: 30px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #eaecef;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .nav-header a {
+            text-decoration: none;
+            color: #0366d6;
+            font-weight: 600;
+        }
+        .nav-header a:hover {
+            text-decoration: underline;
+        }
+        .loading {
+            text-align: center;
+            color: #586069;
+            padding: 50px 0;
+            font-size: 18px;
+        }
+        .error {
+            color: #cb2431;
+            padding: 20px;
+            border: 1px solid #d73a49;
+            border-radius: 6px;
+            background-color: #ffeef0;
+        }
+    </style>
+</head>
+<body class="markdown-body">
+    <div class="nav-header">
+        <a href="#README.md">🏠 Home</a>
+        <a href="https://github.com/mukesh207/Ep2pchat" target="_blank">View on GitHub</a>
+    </div>
+    
+    <div id="content">
+        <div class="loading">Loading documentation...</div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    
+    <script>
+        const contentDiv = document.getElementById('content');
+
+        // Configure marked to use highlight.js
+        marked.setOptions({
+            highlight: function (code, lang) {
+                const language = hljs.getLanguage(lang) ? lang : 'plaintext';
+                return hljs.highlight(code, { language }).value;
+            },
+            gfm: true,
+            breaks: true
+        });
+
+        function normalizePath(basePath, relativePath) {
+            if (relativePath.startsWith('/')) {
+                relativePath = relativePath.substring(1);
+                basePath = '';
+            }
+            const fullPath = basePath + relativePath;
+            const parts = fullPath.split('/');
+            const resolved = [];
+            for (const p of parts) {
+                if (p === '..') {
+                    resolved.pop();
+                } else if (p !== '.' && p !== '') {
+                    resolved.push(p);
+                }
+            }
+            return resolved.join('/');
+        }
+
+        async function loadMarkdown(file) {
+            contentDiv.innerHTML = '<div class="loading">Loading documentation...</div>';
+            
+            try {
+                const response = await fetch(file);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const text = await response.text();
+                contentDiv.innerHTML = marked.parse(text);
+
+                const basePath = file.includes('/') ? file.substring(0, file.lastIndexOf('/') + 1) : '';
+
+                // Fix links
+                contentDiv.querySelectorAll('a').forEach(a => {
+                    let href = a.getAttribute('href');
+                    if (href && !href.startsWith('http') && !href.startsWith('#') && !href.startsWith('mailto:')) {
+                        const resolvedPath = normalizePath(basePath, href);
+                        if (resolvedPath.endsWith('.md')) {
+                            a.setAttribute('href', '#' + resolvedPath);
+                        } else {
+                            a.setAttribute('href', resolvedPath);
+                            a.setAttribute('target', '_blank');
+                        }
+                    }
+                });
+
+                // Fix images
+                contentDiv.querySelectorAll('img').forEach(img => {
+                    let src = img.getAttribute('src');
+                    if (src && !src.startsWith('http') && !src.startsWith('data:')) {
+                        img.setAttribute('src', normalizePath(basePath, src));
+                    }
+                });
+
+                window.scrollTo(0, 0);
+            } catch (error) {
+                contentDiv.innerHTML = `
+                    <div class="error">
+                        <h2>Error Loading Document</h2>
+                        <p>Could not load <code>${file}</code>.</p>
+                        <p>${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+
+        function handleHashChange() {
+            let file = window.location.hash.substring(1);
+            if (!file) {
+                file = 'README.md';
+            }
+            loadMarkdown(file);
+        }
+
+        window.addEventListener('hashchange', handleHashChange);
+        
+        // Initial load
+        handleHashChange();
+    </script>
+</body>
+</html>

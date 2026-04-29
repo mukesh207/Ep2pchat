@@ -92,6 +92,20 @@ services:
     networks:
       - trustline-net
 
+  docs:
+    image: nginx:alpine
+    container_name: trustline-docs
+    restart: unless-stopped
+    volumes:
+      - ../docs:/usr/share/nginx/html:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.docs.rule=Host(`docs.encryptedchats.in`)"
+      - "traefik.http.routers.docs.entrypoints=websecure"
+      - "traefik.http.routers.docs.tls.certresolver=le"
+    networks:
+      - trustline-net
+
 volumes:
   letsencrypt:
   pgdata:
