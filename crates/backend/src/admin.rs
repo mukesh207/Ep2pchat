@@ -9,7 +9,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::Row;
 use uuid::Uuid;
@@ -28,7 +28,272 @@ pub fn router() -> Router<AppState> {
         .route("/deny/{id}", post(deny_user))
         .route("/devices/{user_id}", get(get_user_devices))
         .route("/revoke/{device_id}", post(revoke_device_path))
-        .route("/audit", get(get_audit_logs))
+        .route("/settings", get(get_settings))
+        .route("/settings", post(update_settings))
+        // Phase-4 Bulk & Device management
+        .route("/bulk-approve", post(approve_bulk))
+        .route("/bulk-deny", post(deny_bulk))
+        .route("/devices/{device_id}/alias", post(update_device_alias))
+        .route("/devices/{device_id}/nuke", post(nuke_device))
+        .route("/users/{user_id}/department", post(update_user_department))
+}
+
+#[derive(Deserialize)]
+pub struct UpdateDepartmentPayload {
+    pub department: String,
+}
+
+pub async fn update_user_department(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Path(user_id): Path<Uuid>,
+    Json(payload): Json<UpdateDepartmentPayload>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if !auth.claims.is_admin {
+        return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
+    }
+
+    let result = sqlx::query(
+        "UPDATE users SET department = $1 WHERE id = $2 AND org_id = $3",
+    )
+    .bind(payload.department)
+    .bind(user_id)
+    .bind(auth.claims.org_id)
+    .execute(&state.db)
+    .await;
+
+    match result {
+        Ok(_) => Ok(Json(json!({"status": "success"}))),
+        Err(_) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to update department"})))),
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct UpdateSettingsPayload {
+    pub audit_retention_days: Option<i32>,
+    pub force_rls: Option<bool>,
+    pub branding: Option<Value>,
+    pub is_maintenance_mode: Option<bool>,
+}
+
+pub async fn get_settings(
+    State(state): State<AppState>,
+    auth: AuthContext,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if !auth.claims.is_admin {
+        return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
+    }
+
+    let record = sqlx::query(
+        "SELECT audit_retention_days, force_rls, branding, is_maintenance_mode FROM organizations WHERE id = $1",
+    )
+    .bind(auth.claims.org_id)
+    .fetch_optional(&state.db)
+    .await;
+
+    match record {
+        Ok(Some(row)) => Ok(Json(json!({
+            "audit_retention_days": row.get::<Option<i32>, _>("audit_retention_days").unwrap_or(365),
+            "force_rls": row.get::<Option<bool>, _>("force_rls").unwrap_or(true),
+            "branding": row.get::<Option<Value>, _>("branding").unwrap_or(json!({"primary_color": "#6e56cf", "workspace_name": ""})),
+            "is_maintenance_mode": row.get::<Option<bool>, _>("is_maintenance_mode").unwrap_or(false),
+        }))),
+        _ => Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Organization not found"})),
+        )),
+    }
+}
+
+pub async fn update_settings(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Json(payload): Json<UpdateSettingsPayload>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if !auth.claims.is_admin {
+        return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
+    }
+
+    let result = sqlx::query(
+        "UPDATE organizations SET 
+            audit_retention_days = COALESCE($1, audit_retention_days),
+            force_rls = COALESCE($2, force_rls),
+            branding = COALESCE($3, branding),
+            is_maintenance_mode = COALESCE($4, is_maintenance_mode)
+         WHERE id = $5",
+    )
+    .bind(payload.audit_retention_days)
+    .bind(payload.force_rls)
+    .bind(&payload.branding)
+    .bind(payload.is_maintenance_mode)
+    .bind(auth.claims.org_id)
+    .execute(&state.db)
+    .await;
+
+    match result {
+        Ok(_) => {
+            // Audit: settings updated
+            let _ = sqlx::query(
+                "INSERT INTO audit_logs (org_id, actor_id, action, details) VALUES ($1, $2, $3, $4)",
+            )
+            .bind(auth.claims.org_id)
+            .bind(auth.claims.sub)
+            .bind("SETTINGS_UPDATED")
+            .bind(json!(&payload))
+            .execute(&state.db)
+            .await;
+
+            Ok(Json(json!({ "status": "success" })))
+        }
+        Err(e) => {
+            tracing::error!("Failed to update settings: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "An internal error occurred"})),
+            ))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct BulkActionPayload {
+    pub user_ids: Vec<Uuid>,
+}
+
+pub async fn approve_bulk(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Json(payload): Json<BulkActionPayload>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if !auth.claims.is_admin {
+        return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
+    }
+
+    for user_id in payload.user_ids {
+        let _ = approve_user_internal(state.clone(), auth.clone(), user_id).await;
+    }
+
+    Ok(Json(json!({"status": "success"})))
+}
+
+pub async fn deny_bulk(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Json(payload): Json<BulkActionPayload>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if !auth.claims.is_admin {
+        return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
+    }
+
+    for user_id in payload.user_ids {
+        let _ = deny_user_internal(state.clone(), auth.clone(), user_id).await;
+    }
+
+    Ok(Json(json!({"status": "success"})))
+}
+
+#[derive(Deserialize)]
+pub struct UpdateAliasPayload {
+    pub alias: String,
+}
+
+pub async fn update_device_alias(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Path(device_id): Path<Uuid>,
+    Json(payload): Json<UpdateAliasPayload>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if !auth.claims.is_admin {
+        return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
+    }
+
+    let result = sqlx::query(
+        "UPDATE devices SET alias = $1 WHERE id = $2 AND org_id = $3",
+    )
+    .bind(payload.alias)
+    .bind(device_id)
+    .bind(auth.claims.org_id)
+    .execute(&state.db)
+    .await;
+
+    match result {
+        Ok(_) => Ok(Json(json!({"status": "success"}))),
+        Err(_) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to update alias"})))),
+    }
+}
+
+pub async fn nuke_device(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Path(device_id): Path<Uuid>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if !auth.claims.is_admin {
+        return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
+    }
+
+    // Set is_nuked flag
+    let _ = sqlx::query(
+        "UPDATE devices SET is_nuked = TRUE WHERE id = $1 AND org_id = $2",
+    )
+    .bind(device_id)
+    .bind(auth.claims.org_id)
+    .execute(&state.db)
+    .await;
+
+    // Send NUKE_VAULT command via WS if connected
+    if let Some(conn) = state.ws.connections.get(&device_id) {
+        let nuke_msg = json!({ "type": "NUKE_VAULT", "payload": {} });
+        let _ = conn.tx.send(WsMessage::Text(nuke_msg.to_string().into()));
+    }
+
+    // Then revoke normally
+    revoke_device_internal(state, auth, device_id).await
+}
+
+async fn deny_user_internal(
+    state: AppState,
+    auth: AuthContext,
+    user_id: Uuid,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if !auth.claims.is_admin {
+        return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
+    }
+
+    let result = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
+        Box::pin(async move {
+            let res = sqlx::query(
+                "UPDATE users SET status = 'revoked'
+                 WHERE id = $1 AND org_id = $2
+                 RETURNING org_id, email",
+            )
+            .bind(user_id)
+            .bind(auth.claims.org_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+
+            if let Some(ref row) = res {
+                let org_id: Uuid = row.get("org_id");
+                let email: String = row.get("email");
+                let _ = sqlx::query(
+                    "INSERT INTO audit_logs (org_id, actor_id, action, details)
+                     VALUES ($1, $2, $3, $4)",
+                )
+                .bind(org_id)
+                .bind(auth.claims.sub)
+                .bind("USER_DENIED")
+                .bind(json!({"target_user_id": user_id, "target_email": email}))
+                .execute(&mut *tx)
+                .await?;
+            }
+            Ok(res)
+        })
+    })
+    .await;
+
+    match result {
+        Ok(Some(_)) => Ok(Json(json!({"status": "success"}))),
+        _ => Err((StatusCode::NOT_FOUND, Json(json!({"error": "User not found"})))),
+    }
 }
 
 pub async fn get_pending_users(
@@ -40,7 +305,7 @@ pub async fn get_pending_users(
     }
 
     // RLS: org_id scoped
-    let records = crate::db::with_rls_context(&state.db, auth.claims.org_id, |mut tx| {
+    let records = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
         Box::pin(async move {
             sqlx::query(
                 "SELECT id, org_id, email, username, status, created_at
@@ -74,10 +339,13 @@ pub async fn get_pending_users(
                 .collect();
             Ok(Json(json!({ "users": users })))
         }
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )),
+        Err(e) => {
+            tracing::error!("Failed to fetch pending users: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "An internal error occurred"})),
+            ))
+        }
     }
 }
 
@@ -112,7 +380,7 @@ async fn approve_user_internal(
     }
 
     // RLS: org_id scoped
-    let result = crate::db::with_rls_context(&state.db, auth.claims.org_id, |mut tx| {
+    let result = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
         Box::pin(async move {
             let res = sqlx::query(
                 "UPDATE users SET status = 'active'
@@ -149,10 +417,13 @@ async fn approve_user_internal(
             StatusCode::NOT_FOUND,
             Json(json!({"error": "User not found"})),
         )),
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )),
+        Err(e) => {
+            tracing::error!("Failed to approve user: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "An internal error occurred"})),
+            ))
+        }
     }
 }
 
@@ -166,7 +437,7 @@ pub async fn deny_user(
     }
 
     // RLS: org_id scoped
-    let result = crate::db::with_rls_context(&state.db, auth.claims.org_id, |mut tx| {
+    let result = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
         Box::pin(async move {
             let res = sqlx::query(
                 "UPDATE users
@@ -205,10 +476,13 @@ pub async fn deny_user(
             StatusCode::NOT_FOUND,
             Json(json!({"error": "User not found or not pending"})),
         )),
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )),
+        Err(e) => {
+            tracing::error!("Failed to deny user: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "An internal error occurred"})),
+            ))
+        }
     }
 }
 
@@ -221,10 +495,10 @@ pub async fn get_all_users(
     }
 
     // RLS: org_id scoped
-    let records = crate::db::with_rls_context(&state.db, auth.claims.org_id, |mut tx| {
+    let records = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
         Box::pin(async move {
             sqlx::query(
-                "SELECT u.id, u.email, u.username, u.status, u.org_id, COUNT(d.id) as device_count
+                "SELECT u.id, u.email, u.username, u.status, u.org_id, u.department, COUNT(d.id) as device_count
                  FROM users u LEFT JOIN devices d ON u.id = d.user_id
                  WHERE u.org_id = $1
                  GROUP BY u.id",
@@ -247,16 +521,20 @@ pub async fn get_all_users(
                         "username": r.get::<Option<String>, _>("username"),
                         "status": r.get::<String, _>("status"),
                         "org_id": r.get::<Uuid, _>("org_id"),
+                        "department": r.get::<Option<String>, _>("department"),
                         "device_count": r.get::<i64, _>("device_count")
                     })
                 })
                 .collect();
             Ok(Json(json!({"users": users})))
         }
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )),
+        Err(e) => {
+            tracing::error!("Failed to list users: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "An internal error occurred"})),
+            ))
+        }
     }
 }
 
@@ -270,7 +548,7 @@ pub async fn get_user_devices(
     }
 
     // RLS: org_id scoped
-    let records = crate::db::with_rls_context(&state.db, auth.claims.org_id, |mut tx| {
+    let records = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
         Box::pin(async move {
             sqlx::query(
                 "SELECT d.id, d.device_name, d.last_seen, d.is_active
@@ -304,10 +582,13 @@ pub async fn get_user_devices(
                 .collect();
             Ok(Json(json!({"devices": devices})))
         }
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )),
+        Err(e) => {
+            tracing::error!("Failed to list devices for user: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "An internal error occurred"})),
+            ))
+        }
     }
 }
 
@@ -342,7 +623,7 @@ async fn revoke_device_internal(
     }
 
     // RLS: org_id scoped
-    let result = crate::db::with_rls_context(&state.db, auth.claims.org_id, |mut tx| {
+    let result = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
         Box::pin(async move {
             let res = sqlx::query(
                 "UPDATE devices SET is_active = FALSE
@@ -381,6 +662,10 @@ async fn revoke_device_internal(
 
     match result {
         Ok(Some(_)) => {
+            // Purge pending messages from NATS JetStream
+            let routing_subject = format!("routing.{}", device_id);
+            state.nats.purge_subject(routing_subject).await;
+
             if let Some((_, conn)) = state.ws.connections.remove(&device_id) {
                 let event = json!({ "type": "DEVICE_REVOKED", "payload": { "device_id": device_id } });
                 let _ = conn.tx.send(WsMessage::Text(event.to_string().into()));
@@ -395,10 +680,13 @@ async fn revoke_device_internal(
             StatusCode::NOT_FOUND,
             Json(json!({"error": "Device not found"})),
         )),
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )),
+        Err(e) => {
+            tracing::error!("Failed to revoke device: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "An internal error occurred"})),
+            ))
+        }
     }
 }
 
@@ -422,7 +710,7 @@ pub async fn get_audit_logs(
     let offset = (page - 1) * page_size;
 
     // RLS: org_id scoped
-    let records = crate::db::with_rls_context(&state.db, auth.claims.org_id, |mut tx| {
+    let records = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
         Box::pin(async move {
             sqlx::query(
                 "SELECT a.id, a.action, a.details, a.created_at, u.email as actor_email
@@ -460,9 +748,12 @@ pub async fn get_audit_logs(
                 "page_size": page_size,
             })))
         }
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )),
+        Err(e) => {
+            tracing::error!("Failed to fetch audit logs: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "An internal error occurred"})),
+            ))
+        }
     }
 }

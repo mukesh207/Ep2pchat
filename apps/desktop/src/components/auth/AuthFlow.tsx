@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import * as api from "../../api";
 import * as crypto from "../../lib/crypto";
@@ -23,12 +23,57 @@ export default function AuthFlow({
   const [view, setView] = useState<View>("HOME");
   const [email, setEmail] = useState("");
   const [userId, setUserId] = useState("");
+  const [isCapsLock, setIsCapsLock] = useState(false);
+  const [isBootstrapMode] = useState(() => api.canAttemptAdminBootstrap());
+  const [isOffline, setIsOffline] = useState(false);
+  const [isMaintenance, setIsMaintenance] = useState(false);
+  const [loadingStep, setLoadingStep] = useState("");
+  const [savedAccounts, setSavedAccounts] = useState<string[]>([]);
 
   const [accessCode, setAccessCode] = useState("");
   const [isCheckingApproval, setIsCheckingApproval] = useState(false);
 
   const localKeys = useRef<any>(null);
   const myDeviceId = useRef<string | null>(null);
+
+  useEffect(() => {
+    // Check server health on mount
+    const checkHealth = async () => {
+      const ok = await api.checkServerHealth();
+      setIsOffline(!ok);
+    };
+    void checkHealth();
+
+    // Load saved accounts
+    const saved = localStorage.getItem("trustline.saved_accounts");
+    if (saved) {
+      try {
+        setSavedAccounts(JSON.parse(saved));
+      } catch {
+        setSavedAccounts([]);
+      }
+    }
+
+    const interval = setInterval(checkHealth, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const saveAccount = (emailToSave: string) => {
+    const next = Array.from(new Set([emailToSave, ...savedAccounts])).slice(0, 5);
+    setSavedAccounts(next);
+    localStorage.setItem("trustline.saved_accounts", JSON.stringify(next));
+  };
+
+  const handleCancelRequest = () => {
+    setView("HOME");
+    setEmail("");
+    setUserId("");
+    setAccessCode("");
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    setIsCapsLock(e.getModifierState("CapsLock"));
+  };
 
   const decodeJwtClaims = (token: string): Record<string, unknown> | null => {
     try {
@@ -44,8 +89,13 @@ export default function AuthFlow({
 
   const handleRequestAccess = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsMaintenance(false);
     try {
       const res = await api.requestAccess(email);
+      if (res.error === "MAINTENANCE_MODE") {
+        setIsMaintenance(true);
+        return;
+      }
       if (res.error) throw new Error(res.error);
       setUserId(res.user_id);
       setAccessCode(res.access_code || "");
@@ -73,8 +123,13 @@ export default function AuthFlow({
   };
 
   const handleLogin = async (loginEmail: string, uid: string) => {
+    setIsMaintenance(false);
     try {
       const res = await api.loginPasskey(loginEmail);
+      if (res.error === "MAINTENANCE_MODE") {
+        setIsMaintenance(true);
+        return;
+      }
       if (res.error) throw new Error(res.error);
       api.setToken(res.token); setUserId(uid);
       await invoke("set_session_jwt", { jwt: res.token }).catch(() => {});
@@ -85,8 +140,9 @@ export default function AuthFlow({
       if (savedDevice) myDeviceId.current = savedDevice;
 
       if (!localKeys.current) setView("REGISTER"); else {
+        saveAccount(loginEmail);
         const claims = decodeJwtClaims(api.getToken());
-        onAuthenticated(uid, res.org_id, myDeviceId.current!, localKeys.current, Boolean((claims as any)?.is_admin));
+        onAuthenticated(uid, res.org_id, loginEmail, myDeviceId.current!, localKeys.current, Boolean((claims as any)?.is_admin));
       }
     } catch (err: any) {
       // "No passkeys found" is expected for first-time users — don't show as error
@@ -103,8 +159,11 @@ export default function AuthFlow({
     setUserId(uid);
     await invoke("set_session_jwt", { jwt: token }).catch(() => {});
 
+    setLoadingStep("Generating X25519 Identity Keys...");
     const keys = await crypto.generateKeys();
     localKeys.current = keys;
+    
+    setLoadingStep("Anchoring to hardware Secure Enclave...");
     try {
       await vault.saveLocalKeys(keys);
       const otpkPairs = keys.one_time_pre_keys.map((k: any) => ({
@@ -116,6 +175,7 @@ export default function AuthFlow({
       console.error("Local vault save failed", err);
     }
 
+    setLoadingStep("Syncing public keys with relay server...");
     const uploadRes = await api.uploadKeys({
       user_id: uid,
       org_id: orgIdVal,
@@ -129,8 +189,10 @@ export default function AuthFlow({
 
     myDeviceId.current = uploadRes.device_id;
     try { await vault.saveDeviceId(uploadRes.device_id); } catch {}
+
+    saveAccount(email);
     // Call onAuthenticated directly with fresh values (React setState is async)
-    onAuthenticated(uid, orgIdVal, uploadRes.device_id, keys, adminFlag);
+    onAuthenticated(uid, orgIdVal, email, uploadRes.device_id, keys, adminFlag);
   };
 
   const handleRegisterPasskey = async () => {
@@ -178,6 +240,23 @@ export default function AuthFlow({
   };
 
 
+  const handleAccountSelect = (selectedEmail: string) => {
+    setEmail(selectedEmail);
+    // Automatically trigger access request for the selected email
+    void api.requestAccess(selectedEmail).then((res) => {
+      if (res.error) throw new Error(res.error);
+      setUserId(res.user_id);
+      setAccessCode(res.access_code || "");
+      if (res.status === "active") {
+        void handleLogin(selectedEmail, res.user_id);
+      } else {
+        setView("WAITING");
+      }
+    }).catch(err => {
+      addToast(err.message || "Failed to reach server for selected account.", "error");
+    });
+  };
+
   return (
     <OnboardingScreen
       view={view}
@@ -187,8 +266,16 @@ export default function AuthFlow({
       onEmailChange={setEmail}
       onSubmit={handleRequestAccess}
       onRegister={handleRegisterPasskey}
-      onBack={() => setView("HOME")}
       onCheckApproval={checkApproval}
+      isCapsLock={isCapsLock}
+      isBootstrapMode={isBootstrapMode}
+      onKeyDown={handleKeyDown}
+      isOffline={isOffline}
+      isMaintenance={isMaintenance}
+      loadingStep={loadingStep}
+      savedAccounts={savedAccounts}
+      onCancelRequest={handleCancelRequest}
+      onAccountSelect={handleAccountSelect}
     />
   );
 }

@@ -289,13 +289,15 @@ async fn health_db(State(state): State<AppState>) -> (axum::http::StatusCode, Js
                 "database": "postgresql"
             })),
         ),
-        Err(e) => (
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "status": "error",
-                "message": e.to_string()
-            })),
-        ),
+        Err(e) => {
+            tracing::error!("DB health check failed: {}", e);
+            (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "status": "error"
+                })),
+            )
+        }
     }
 }
 

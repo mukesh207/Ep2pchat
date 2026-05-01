@@ -81,7 +81,13 @@ services:
     image: nats:2.10-alpine
     container_name: trustline-nats
     restart: unless-stopped
-    command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222"]
+    command:
+      - "--jetstream"
+      - "--store_dir=/data"
+      - "--http_port=8222"
+      - "--max_payload=1048576"
+      - "--js_max_mem_store=256MB"
+      - "--js_max_store=2GB"
     volumes:
       - natsdata:/data
     healthcheck:

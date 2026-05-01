@@ -1,10 +1,11 @@
-import { useState, useRef, useEffect, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { Search, Send, Shield, Zap, CheckCircle, Lock, MessageSquare, XCircle } from "lucide-react";
+import { useState, useRef, useEffect, useMemo, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { Search, Send, Shield, Zap, CheckCircle, Lock, MessageSquare, XCircle, Reply, Edit3, Trash2, Smile, CornerDownRight, MoreVertical } from "lucide-react";
 import { socket } from "../../lib/socket";
 import EncryptionSpinner from "../EncryptionSpinner";
 import * as crypto from "../../lib/crypto";
 import * as vault from "../../lib/vault";
 import { useToast } from "../ui/Toast";
+import { ContextMenu } from "../ui/ContextMenu";
 
 export default function ChatArena({
   activeContact,
@@ -14,6 +15,7 @@ export default function ChatArena({
   setMessages,
   workspaceName,
   typingByContact,
+  presenceByContact,
   localKeys,
   setLastMessageByContact,
   showContactDetail,
@@ -23,6 +25,8 @@ export default function ChatArena({
   const { addToast } = useToast();
   const [inputText, setInputText] = useState("");
   const [messageSearch, setMessageSearch] = useState("");
+  const [replyTo, setReplyTo] = useState<any | null>(null);
+  const [editingMsg, setEditingMsg] = useState<any | null>(null);
   const typingTimeout = useRef<number | null>(null);
   const feedEnd = useRef<HTMLDivElement>(null);
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
@@ -42,7 +46,11 @@ export default function ChatArena({
 
   useEffect(() => {
     resizeComposer(composerInputRef.current);
-  }, [inputText]);
+    if (editingMsg) {
+      setInputText(editingMsg.text);
+      composerInputRef.current?.focus();
+    }
+  }, [inputText, editingMsg]);
 
   const getErrorMessage = (err: unknown, fallback: string) => {
     if (err instanceof Error && err.message) return err.message;
@@ -53,9 +61,24 @@ export default function ChatArena({
   const sendMessage = async () => {
     if (!inputText.trim() || !activeContact) return;
 
-    const myMsg = {
-      id: `msg-${Date.now()}`, sender: "me", text: inputText,
-      timestamp: new Date().toISOString(), is_me: true, status: "sending",
+    if (editingMsg) {
+      await sendEdit(editingMsg.id, inputText);
+      setEditingMsg(null);
+      setInputText("");
+      return;
+    }
+
+    const myMsg: any = {
+      id: `msg-${Date.now()}`, 
+      sender: "me", 
+      text: inputText,
+      timestamp: new Date().toISOString(), 
+      is_me: true, 
+      status: "sending",
+      parent_id: replyTo?.id || null,
+      reactions: [],
+      is_edited: false,
+      is_deleted: false,
     };
 
     if (!localKeys.current) {
@@ -86,7 +109,13 @@ export default function ChatArena({
         );
       }
 
-      const result = await crypto.ratchetEncrypt(sessionJson, inputText, activeContact.id);
+      const payload = {
+        type: "text",
+        body: inputText,
+        parent_id: replyTo?.id || null,
+      };
+
+      const result = await crypto.ratchetEncrypt(sessionJson, JSON.stringify(payload), activeContact.id);
       await vault.saveRatchetSession(activeContact.id, result.new_session_json).catch(() => {});
 
       socket.send("MESSAGE_SEND", {
@@ -100,16 +129,22 @@ export default function ChatArena({
 
       try {
         await vault.saveMessage({
-          ...myMsg,
+          id: myMsg.id,
+          temp_id: myMsg.id,
+          sender: "me",
+          text: inputText,
+          is_me: true,
           conversation_id: activeContact.id,
           recipient_id: activeContact.id,
           timestamp: myMsg.timestamp,
-          temp_id: myMsg.id,
           message_status: "sending",
+          parent_id: myMsg.parent_id,
         });
       } catch {}
       setLastMessageByContact((prev: any) => ({ ...prev, [activeContact.id]: myMsg.text }));
-      setMessages((prev: any) => [...prev, myMsg]); setInputText("");
+      setMessages((prev: any) => [...prev, myMsg]); 
+      setInputText("");
+      setReplyTo(null);
       resizeComposer(composerInputRef.current);
       socket.send("TYPING_EVENT", { recipient_device_id: targetDevice.device_id, is_typing: false });
     } catch (err) {
@@ -118,14 +153,69 @@ export default function ChatArena({
     }
   };
 
+  const sendEdit = async (targetId: string, newText: string) => {
+    await sendEvent("edit", targetId, { body: newText });
+    setMessages((prev: any) => prev.map((m: any) => m.id === targetId ? { ...m, text: newText, is_edited: true } : m));
+  };
+
+  const sendDelete = async (targetId: string) => {
+    await sendEvent("delete", targetId, {});
+    setMessages((prev: any) => prev.map((m: any) => m.id === targetId ? { ...m, is_deleted: true, text: "This message was deleted" } : m));
+  };
+
+  const sendReaction = async (targetId: string, emoji: string) => {
+    await sendEvent("reaction", targetId, { emoji });
+    setMessages((prev: any) => prev.map((m: any) => m.id === targetId ? { ...m, reactions: [...(m.reactions || []), emoji] } : m));
+  };
+
+  const sendEvent = async (type: string, targetId: string, payload: any) => {
+    if (!activeContact) return;
+    const targetDevice = activeContact.devices?.[0];
+    if (!targetDevice || !localKeys.current) return;
+
+    try {
+      const sessionJson = await vault.getRatchetSession(activeContact.id);
+      if (!sessionJson) return;
+
+      const eventPayload = { type, target_id: targetId, ...payload };
+      const result = await crypto.ratchetEncrypt(sessionJson, JSON.stringify(eventPayload), activeContact.id);
+      await vault.saveRatchetSession(activeContact.id, result.new_session_json);
+
+      const eventId = `ev-${Date.now()}`;
+      socket.send("MESSAGE_SEND", {
+        temp_id: eventId,
+        recipient_device_id: targetDevice.device_id,
+        ciphertext: result.ciphertext,
+        header: result.header,
+      });
+
+      await vault.saveMessageEvent({
+        id: eventId,
+        target_msg_id: targetId,
+        event_type: type,
+        payload: payload,
+      });
+    } catch (err) {
+      console.error("[ratchet] sendEvent failed:", err);
+    }
+  };
+
   const handleComposerKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       void sendMessage();
     }
+    if (event.key === "Escape") {
+      setReplyTo(null);
+      setEditingMsg(null);
+      if (!editingMsg) setInputText("");
+    }
   };
 
-  const visibleMessages = messages.filter((m: any) => m.text.toLowerCase().includes(messageSearch.toLowerCase()));
+  const visibleMessages = useMemo(() => 
+    messages.filter((m: any) => m.text.toLowerCase().includes(messageSearch.toLowerCase())),
+    [messages, messageSearch]
+  );
 
   function getDisplayName(contact: any) {
     return contact.username || contact.email;
@@ -154,8 +244,10 @@ export default function ChatArena({
                 <div className="chat-header-name">{getDisplayName(activeContact)}</div>
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: "var(--fs-chat-meta)", color: "var(--text-muted)" }}>
                   {typingByContact[activeContact.id]
-                    ? "Typing now..."
-                    : `${activeContact.device_count ?? 1} device${(activeContact.device_count ?? 1) !== 1 ? "s" : ""} registered`}
+                    ? "Typing..."
+                    : presenceByContact[activeContact.id]
+                      ? presenceByContact[activeContact.id].charAt(0).toUpperCase() + presenceByContact[activeContact.id].slice(1)
+                      : "Offline"}
                 </div>
               </div>
               {isHandshaking ? (
@@ -171,12 +263,18 @@ export default function ChatArena({
 
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{
-                fontFamily: "var(--font-mono)", fontSize: "var(--fs-chat-meta)",
-                color: "var(--text-muted)", textAlign: "right", lineHeight: 1.6
-              }}>
-                <div>{workspaceName.toUpperCase()}</div>
-                <div style={{ color: "var(--accent-teal)" }}>Verify keys available</div>
+              fontFamily: "var(--font-mono)", fontSize: "var(--fs-chat-meta)",
+              color: "var(--text-muted)", textAlign: "right", lineHeight: 1.6
+            }}>
+              <div>{workspaceName.toUpperCase()}</div>
+              <div 
+                style={{ color: "var(--accent-teal)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 4 }}
+                onClick={() => showContactDetail && showContactDetail(activeContact)}
+              >
+                <CheckCircle size={10} />
+                Verify security
               </div>
+            </div>
               <button
                 id="close-chat-btn"
                 className="btn btn-ghost btn-sm"
@@ -192,115 +290,129 @@ export default function ChatArena({
             <EncryptionSpinner />
           ) : (
             <div className="messages-feed" id="messages-feed">
-              {/* Session info banner */}
               <div className="session-banner">
                 <Shield size={11} />
                 Messages stay encrypted in transit and protected on this device.
               </div>
-
               <div className="conversation-search">
                 <Search size={14} className="conversation-search-icon" />
-                <input
-                  className="input"
-                  placeholder="Search local message history"
-                  value={messageSearch}
-                  onChange={e => setMessageSearch(e.target.value)}
-                />
+                <input className="input" placeholder="Search local message history" value={messageSearch} onChange={e => setMessageSearch(e.target.value)} />
               </div>
-
-              {visibleMessages.map((m: any) => (
-                <div
-                  key={m.id}
-                  id={`msg-${m.id}`}
-                  className={`message-bubble ${m.is_me || m.sender === "me" ? "me" : "them"}`}
-                >
-                  <div className="bubble-content">{m.text}</div>
-                  <div className="message-meta">
-                    {m.is_me || m.sender === "me" ? (
-                      <><CheckCircle size={8} style={{ color: "var(--accent-success)" }} /> {m.status === "read" ? "Read" : m.status === "delivered" ? "Delivered" : m.status === "sending" ? "Sending..." : "Sent securely"}</>
-                    ) : (
-                      <><Lock size={8} style={{ color: "var(--accent-teal)" }} /> Received securely</>
-                    )}
-                    &nbsp;·&nbsp;
-                    {new Date(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                  </div>
-                </div>
-              ))}
-
-              {visibleMessages.length === 0 && (
-                <div className="chat-empty-state">
-                  <MessageSquare size={24} strokeWidth={1} style={{ color: "var(--text-muted)" }} />
-                  <div>{messageSearch ? "No local matches found" : "Conversation ready"}</div>
-                  <div style={{ color: "var(--text-muted)", fontSize: "var(--fs-chat-meta)" }}>
-                    {messageSearch
-                      ? "Try a different keyword. Search runs only against this device's local history."
-                      : "Send the first message to start this encrypted thread."}
-                  </div>
-                </div>
-              )}
-
-              {/* Typing indicator */}
-              {typingByContact[activeContact.id] && (
-                <div className="typing-indicator">
-                  <div className="typing-dots"><span /><span /><span /></div>
-                  {getDisplayName(activeContact)} is typing
-                </div>
-              )}
-
+              {visibleMessages.map((m: any) => {
+                const parent = m.parent_id ? messages.find((p: any) => p.id === m.parent_id) : null;
+                return (
+                  <ContextMenu
+                    key={m.id}
+                    items={m.is_deleted ? [] : [
+                      { label: "Reply", icon: <Reply size={12} />, onClick: () => setReplyTo(m) },
+                      ...(m.is_me ? [
+                        { label: "Edit Message", icon: <Edit3 size={12} />, onClick: () => setEditingMsg(m) },
+                        { label: "Delete Message", icon: <Trash2 size={12} />, variant: "danger" as const, onClick: () => void sendDelete(m.id) }
+                      ] : []),
+                      { label: "React 👍", onClick: () => void sendReaction(m.id, "👍") },
+                      { label: "React ❤️", onClick: () => void sendReaction(m.id, "❤️") },
+                      { label: "React 😂", onClick: () => void sendReaction(m.id, "😂") },
+                    ]}
+                  >
+                    <div id={`msg-${m.id}`} className={`message-bubble ${m.is_me ? "me" : "them"}`}>
+                      {parent && (
+                        <div className="message-reply-context">
+                          <CornerDownRight size={10} />
+                          <div className="reply-text-truncate">{parent.is_deleted ? "Deleted message" : parent.text}</div>
+                        </div>
+                      )}
+                      <div className="bubble-content">
+                        {m.text}
+                        {m.is_edited && <span className="edited-tag">(edited)</span>}
+                      </div>
+                      {m.reactions?.length > 0 && (
+                        <div className="message-reactions">
+                          {Array.from(new Set(m.reactions)).map((emoji: any, i) => (
+                            <span key={i} className="reaction-badge">
+                              {emoji} <span style={{ fontSize: '0.6rem', opacity: 0.7 }}>{m.reactions.filter((r: any) => r === emoji).length}</span>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <div className="message-meta">
+                        {m.is_me ? (
+                          <>
+                            <CheckCircle size={8} style={{ color: m.status === 'read' ? 'var(--accent-teal)' : 'var(--accent-success)' }} />
+                            {" "}{m.status === 'read' ? 'Read' : m.status === 'delivered' ? 'Delivered' : m.status === 'sending' ? 'Sending...' : 'Sent'}
+                          </>
+                        ) : (
+                          <>
+                            <Lock size={8} style={{ color: 'var(--accent-teal)' }} /> Received
+                          </>
+                        )}
+                        {" · "}{new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </div>
+                    </div>
+                  </ContextMenu>
+                );
+              })}
               <div ref={feedEnd} />
             </div>
           )}
 
-          {/* Composer */}
           {!isHandshaking && (
-            <div className="composer">
-              <div style={{
-                display: "flex", alignItems: "center", gap: 8,
-                fontFamily: "var(--font-mono)", fontSize: "var(--fs-chat-meta)",
-                color: "var(--accent-primary)", flexShrink: 0
-              }}>
-                <Lock size={11} />
-                E2EE
+            <div className="composer-wrap">
+              {replyTo && (
+                <div className="composer-preview reply">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Reply size={12} color="var(--accent-teal)" />
+                    <div className="preview-text">Replying to: <span>{replyTo.text}</span></div>
+                  </div>
+                  <button className="btn btn-ghost btn-sm btn-icon" onClick={() => setReplyTo(null)}><XCircle size={14} /></button>
+                </div>
+              )}
+              {editingMsg && (
+                <div className="composer-preview edit">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Edit3 size={12} color="var(--accent-primary)" />
+                    <div className="preview-text">Editing message...</div>
+                  </div>
+                  <button className="btn btn-ghost btn-sm btn-icon" onClick={() => { setEditingMsg(null); setInputText(""); }}><XCircle size={14} /></button>
+                </div>
+              )}
+              <div className="composer">
+                <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "var(--font-mono)", fontSize: "var(--fs-chat-meta)", color: "var(--accent-primary)", flexShrink: 0 }}>
+                  <Lock size={11} />E2EE
+                </div>
+                <div className="composer-input-wrap">
+                  <textarea
+                    ref={composerInputRef}
+                    id="message-input"
+                    className="input composer-textarea"
+                    placeholder={editingMsg ? "Edit your message" : "Write a message"}
+                    value={inputText}
+                    rows={1}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setInputText(val);
+                      const target = activeContact.devices?.[0];
+                      if (target) {
+                        socket.send("TYPING_EVENT", { recipient_device_id: target.device_id, is_typing: val.trim().length > 0 });
+                        if (typingTimeout.current) window.clearTimeout(typingTimeout.current);
+                        typingTimeout.current = window.setTimeout(() => {
+                          socket.send("TYPING_EVENT", { recipient_device_id: target.device_id, is_typing: false });
+                        }, 1200);
+                      }
+                    }}
+                    onKeyDown={handleComposerKeyDown}
+                    autoComplete="off"
+                  />
+                  <span className="composer-key-hint">Enter Send · Shift+Enter New Line</span>
+                </div>
+                <button
+                  id="send-btn"
+                  className="btn btn-primary"
+                  onClick={sendMessage}
+                  disabled={!inputText.trim() || !localKeys.current || !activeContact?.devices?.[0]}
+                >
+                  <Send size={13} /> {editingMsg ? "Update" : "Send"}
+                </button>
               </div>
-              <div className="composer-input-wrap">
-                <textarea
-                  ref={composerInputRef}
-                  id="message-input"
-                  className="input composer-textarea"
-                  placeholder="Write a message"
-                  value={inputText}
-                  rows={1}
-                  onChange={e => {
-                    const nextValue = e.target.value;
-                    setInputText(nextValue);
-                    const activeDevice = activeContact?.devices?.[0];
-                    if (activeDevice) {
-                      socket.send("TYPING_EVENT", {
-                        recipient_device_id: activeDevice.device_id,
-                        is_typing: nextValue.trim().length > 0,
-                      });
-                      if (typingTimeout.current) window.clearTimeout(typingTimeout.current);
-                      typingTimeout.current = window.setTimeout(() => {
-                        socket.send("TYPING_EVENT", {
-                          recipient_device_id: activeDevice.device_id,
-                          is_typing: false,
-                        });
-                      }, 1200);
-                    }
-                  }}
-                  onKeyDown={handleComposerKeyDown}
-                  autoComplete="off"
-                />
-                <span className="composer-key-hint">Enter Send · Shift+Enter New Line</span>
-              </div>
-              <button
-                id="send-btn"
-                className="btn btn-primary"
-                onClick={sendMessage}
-                disabled={!inputText.trim() || !localKeys.current || !activeContact?.devices?.[0]}
-              >
-                <Send size={13} /> Send
-              </button>
             </div>
           )}
         </>

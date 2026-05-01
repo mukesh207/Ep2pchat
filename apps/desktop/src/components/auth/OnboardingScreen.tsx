@@ -1,5 +1,9 @@
-import { Shield, Lock, Zap, Key, User, RefreshCw, CheckCircle } from "lucide-react";
+import { Shield, Lock, Zap, Key, User, RefreshCw, CheckCircle, Info, AlertCircle, ExternalLink, WifiOff, AlertTriangle } from "lucide-react";
 import { ShaderAnimation } from "../ui/shader-lines";
+import { useMemo } from "react";
+
+// Declared in vite.config.ts
+declare const __APP_VERSION__: string;
 
 type OnboardingProps = {
   view: "HOME" | "WAITING" | "REGISTER" | "LOADING";
@@ -9,17 +13,40 @@ type OnboardingProps = {
   onEmailChange: (e: string) => void;
   onSubmit: (e: React.FormEvent) => void;
   onRegister: () => void;
-  onBack: () => void;
   onCheckApproval: () => void;
+  isCapsLock: boolean;
+  isBootstrapMode: boolean;
+  onKeyDown: (e: React.KeyboardEvent) => void;
+  isOffline: boolean;
+  isMaintenance: boolean;
+  loadingStep: string;
+  savedAccounts: string[];
+  onCancelRequest: () => void;
+  onAccountSelect: (email: string) => void;
 };
 
 function OnboardingScreen({
   view, email, accessCode, isCheckingApproval,
-  onEmailChange, onSubmit, onRegister, onBack, onCheckApproval
+  onEmailChange, onSubmit, onRegister, onCheckApproval,
+  isCapsLock, isBootstrapMode, onKeyDown,
+  isOffline, isMaintenance, loadingStep, savedAccounts, onCancelRequest, onAccountSelect
 }: OnboardingProps) {
+  const orgContext = useMemo(() => {
+    if (!email.includes("@")) return null;
+    const domain = email.split("@")[1];
+    if (!domain || !domain.includes(".")) return null;
+    
+    const name = domain.split(".")[0]
+      .replace(/-/g, " ")
+      .split(" ")
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(" ");
+    
+    return { name, domain, initials: name.charAt(0).toUpperCase() };
+  }, [email]);
 
   return (
-    <div className="onboarding-bg">
+    <div className="onboarding-bg" onKeyDown={onKeyDown}>
       <div style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", zIndex: 0, opacity: 0.6 }}>
         <ShaderAnimation />
       </div>
@@ -57,16 +84,75 @@ function OnboardingScreen({
 
         <div className={`onboarding-view-transition ${view}`}>
           {view === "HOME" && (
+            isMaintenance ? (
+                <div className="status-card" style={{ animation: 'fadeSlideIn 0.3s ease' }}>
+                  <div style={{ margin: "0 auto 20px", color: "var(--accent-warning)", display: "flex", justifyContent: "center" }}>
+                    <AlertTriangle size={40} strokeWidth={1.5} />
+                  </div>
+                  <div className="status-card-title">Maintenance Mode</div>
+                  <div className="status-card-desc">
+                    Your organization workspace is currently undergoing scheduled maintenance. 
+                    Access is temporarily restricted to administrators only.
+                  </div>
+                  <button className="btn btn-ghost btn-full" onClick={() => window.location.reload()} style={{ marginTop: 12 }}>
+                    <RefreshCw size={14} /> Try again later
+                  </button>
+                </div>
+              ) : (
             <form onSubmit={onSubmit}>
+              {isBootstrapMode && (
+                <div className="bootstrap-badge">
+                  <Zap size={10} fill="var(--accent-primary)" />
+                  SYSTEM INITIALIZATION MODE
+                </div>
+              )}
+
+              {isOffline && (
+                <div className="offline-warning">
+                  <WifiOff size={14} />
+                  <span>Server unreachable. Check your connection.</span>
+                </div>
+              )}
+              
               <div className="onboarding-copy">
-                <h1>Sign in to your workspace</h1>
+                <h1>{orgContext ? `Sign in to ${orgContext.name}` : "Sign in to your workspace"}</h1>
                 <p>Use your work email to request access or continue with your existing passkey.</p>
               </div>
 
+              {savedAccounts.length > 0 && !email && (
+                <div className="saved-accounts">
+                  <div className="saved-accounts-label">RECENT ACCOUNTS</div>
+                  <div className="saved-accounts-list">
+                    {savedAccounts.map((acc) => (
+                      <button 
+                        key={acc} 
+                        type="button" 
+                        className="saved-account-item"
+                        onClick={() => onAccountSelect(acc)}
+                      >
+                        <div className="avatar-preview" style={{ width: 28, height: 28, fontSize: '0.75rem' }}>
+                          {acc.charAt(0).toUpperCase()}
+                        </div>
+                        <div className="saved-account-info">
+                          <div className="saved-account-email">{acc}</div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="form-group">
-                <label className="onboarding-form-label" htmlFor="email-input">
-                  Work email
-                </label>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
+                  <label className="onboarding-form-label" htmlFor="email-input">
+                    Work email
+                  </label>
+                  {isCapsLock && (
+                    <span className="caps-lock-warning">
+                      <AlertCircle size={10} /> CAPS LOCK ON
+                    </span>
+                  )}
+                </div>
                 <input
                   id="email-input"
                   className="input"
@@ -75,10 +161,11 @@ function OnboardingScreen({
                   onChange={e => onEmailChange(e.target.value)}
                   placeholder="name@company.com"
                   required autoComplete="off"
+                  disabled={isOffline}
                 />
               </div>
 
-              <button id="enter-btn" type="submit" className="btn btn-primary btn-full">
+              <button id="enter-btn" type="submit" className="btn btn-primary btn-full" disabled={isOffline}>
                 <Shield size={14} /> Continue
               </button>
 
@@ -86,16 +173,18 @@ function OnboardingScreen({
                 {[
                   { icon: <Lock size={10} />,    label: "End-to-end encryption" },
                   { icon: <Shield size={10} />,  label: "Protected storage" },
-                  { icon: <Zap size={10} />,     label: "Passkey sign-in" },
+                  { icon: <Zap size={10} />,     label: "Passkey sign-in", tooltip: "Trustline uses hardware-bound FIDO2 passkeys (Biometrics/TPM) instead of vulnerable passwords." },
                   { icon: <Key size={10} />,     label: "Device trust" },
                 ].map(b => (
-                  <div key={b.label} className="security-badge">
+                  <div key={b.label} className="security-badge" title={b.tooltip}>
                     <span style={{ color: "var(--accent-primary)" }}>{b.icon}</span>
                     {b.label}
+                    {b.tooltip && <Info size={8} style={{ marginLeft: 4, opacity: 0.5 }} />}
                   </div>
                 ))}
               </div>
             </form>
+            )
           )}
 
           {view === "WAITING" && (
@@ -106,12 +195,29 @@ function OnboardingScreen({
                     strokeWidth="1" strokeDasharray="12 6" opacity="0.5" />
                   <circle cx="28" cy="4" r="3" fill="var(--accent-primary)" />
                 </svg>
-                <div className="status-spinner-icon"><User size={20} color="var(--accent-primary)" strokeWidth={1.5} /></div>
+                <div className="status-spinner-icon">
+                  {orgContext ? (
+                    <div className="avatar-preview">{orgContext.initials}</div>
+                  ) : (
+                    <User size={20} color="var(--accent-primary)" strokeWidth={1.5} />
+                  )}
+                </div>
               </div>
               <div className="status-card-title">Access request sent</div>
               <div className="status-card-desc">
                 Share this access code with your workspace admin. Trustline will keep checking for approval automatically.
               </div>
+              
+              {orgContext && (
+                <div style={{ marginTop: 12 }}>
+                  <a 
+                    href={`mailto:admin@${orgContext.domain}?subject=Trustline Access Request: ${accessCode}`} 
+                    className="contact-admin-link"
+                  >
+                    <ExternalLink size={10} /> Contact organization administrator
+                  </a>
+                </div>
+              )}
               <div className="access-code-card">
                 <div className="access-code-label">Access code</div>
                 <div className="access-code-value">{accessCode || "WAIT-ROOM"}</div>
@@ -129,8 +235,13 @@ function OnboardingScreen({
               <button id="refresh-status-btn" className="btn btn-primary btn-full" onClick={onCheckApproval}>
                 <RefreshCw size={14} /> Check approval
               </button>
-              <button id="back-btn" className="btn btn-ghost btn-full" onClick={onBack} style={{ marginTop: 20 }}>
-                Back
+              
+              <div className="recovery-hint">
+                Lost your passkey? Contact your organization administrator to reset your account access.
+              </div>
+
+              <button id="back-btn" className="btn btn-ghost btn-full" onClick={onCancelRequest} style={{ marginTop: 12 }}>
+                Cancel & Start Over
               </button>
             </div>
           )}
@@ -154,6 +265,10 @@ function OnboardingScreen({
               <button id="init-vault-btn" className="btn btn-primary btn-full" onClick={onRegister}>
                 <Lock size={14} /> Finish setup
               </button>
+              
+              <div className="recovery-hint">
+                Registration requires a hardware security module (TPM/Secure Enclave) or a FIDO2 security key.
+              </div>
             </div>
           )}
 
@@ -174,7 +289,7 @@ function OnboardingScreen({
               </div>
               <div className="status-card-title">Setting up your workspace</div>
               <div className="status-card-desc">
-                Generating encryption keys and registering your device…
+                {loadingStep || "Generating encryption keys and registering your device…"}
               </div>
               <div className="boot-bar-wrap">
                 <div className="boot-bar-label">
@@ -183,14 +298,27 @@ function OnboardingScreen({
                 </div>
                 <div className="boot-bar-track"><div className="boot-bar-fill" style={{ animation: "boot-expand 3s ease-out forwards" }} /></div>
               </div>
+
+              <div className="interruption-warning">
+                <AlertCircle size={12} />
+                DO NOT CLOSE APP OR TURN OFF DEVICE
+              </div>
             </div>
           )}
+        </div>
+
+        <div className="onboarding-legal">
+          By continuing, you agree to our <a href="#">Terms</a> and <a href="#">Privacy Policy</a>
+          <ExternalLink size={8} style={{ marginLeft: 4, verticalAlign: 'middle' }} />
         </div>
       </div>
 
       <div className="onboarding-footer">
-        <span className="status-dot active" />
-        Secure messaging, trusted devices, and protected team access.
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span className="status-dot active" />
+          <span>Secure messaging, trusted devices, and protected team access.</span>
+        </div>
+        <div className="app-version">v{__APP_VERSION__}</div>
       </div>
     </div>
   );

@@ -5,6 +5,8 @@
 // - Connection state tracking with callbacks
 // - Ping/pong heartbeat (25s interval)
 
+import { WS_BASE_URL } from "./config";
+
 /** Payload shape for all WebSocket messages. */
 export interface WsMessage {
     type: string;
@@ -192,11 +194,7 @@ export class TrustlineSocket {
     }
 }
 
-// ── Module-level singleton ─────────────────────────────────────────────────
-
-function trimTrailingSlash(value: string): string {
-    return value.replace(/\/+$/, "");
-}
+// ── Helpers ────────────────────────────────────────────────────────────────
 
 function toBase64Url(value: string): string {
     const bytes = new TextEncoder().encode(value);
@@ -207,17 +205,8 @@ function toBase64Url(value: string): string {
     return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-function resolveWebSocketBase(): string {
-    const configuredBase = import.meta.env.VITE_WS_BASE_URL?.trim();
-    if (configuredBase) {
-        return trimTrailingSlash(configuredBase);
-    }
-    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    return `${protocol}://${window.location.host}/ws`;
-}
-
 /** Singleton WebSocket client instance. */
-export const socket = new TrustlineSocket(resolveWebSocketBase());
+export const socket = new TrustlineSocket(WS_BASE_URL);
 
 /** Convenience: tear down the global socket (e.g. on logout). */
 export function destroySocket(): void {

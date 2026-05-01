@@ -81,7 +81,7 @@ pub async fn upload_keys(
         };
 
     // RLS: org_id scoped
-    let result = crate::db::with_rls_context(&state.db, auth.claims.org_id, |mut tx| Box::pin(async move {
+    let result = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| Box::pin(async move {
         let device_row = sqlx::query(
             "INSERT INTO devices (user_id, org_id, device_name, identity_key_public, signed_pre_key_public, signed_pre_key_signature)
              VALUES ($1, $2, $3, $4, $5, $6) RETURNING id"
@@ -117,10 +117,13 @@ pub async fn upload_keys(
 
     match result {
         Ok(device_id) => Ok(Json(json!({"status": "success", "device_id": device_id}))),
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("DB Error: {}", e)})),
-        )),
+        Err(e) => {
+            tracing::error!("Key upload failed: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "An internal error occurred"})),
+            ))
+        }
     }
 }
 
@@ -140,7 +143,7 @@ pub async fn get_user_keys_handler(
     Path(user_id): Path<Uuid>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     // RLS: org_id scoped
-    let allowed = crate::db::with_rls_context(&state.db, auth.claims.org_id, |mut tx| {
+    let allowed = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
         Box::pin(async move {
             let row = sqlx::query("SELECT org_id FROM users WHERE id = $1")
                 .bind(user_id)
@@ -165,9 +168,10 @@ pub async fn get_user_keys_handler(
             ))
         }
         Err(e) => {
+            tracing::error!("User key fetch org check failed: {}", e);
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
+                Json(json!({"error": "An internal error occurred"})),
             ))
         }
     }
@@ -183,7 +187,7 @@ pub async fn get_user_keys_internal(
     user_id: Uuid,
     org_id: Uuid,
 ) -> Result<Vec<DeviceBundle>, String> {
-    let devices = crate::db::with_rls_context(db, org_id, |mut tx| Box::pin(async move {
+    let devices = crate::db::with_rls_context(db, org_id, |tx| Box::pin(async move {
         sqlx::query(
             "SELECT id, device_name, identity_key_public, signed_pre_key_public, signed_pre_key_signature
              FROM devices
@@ -201,7 +205,7 @@ pub async fn get_user_keys_internal(
     for device_row in devices {
         let device_id: Uuid = device_row.get("id");
 
-        let result = crate::db::with_rls_context(db, org_id, |mut tx| {
+        let result = crate::db::with_rls_context(db, org_id, |tx| {
             Box::pin(async move {
                 let opk_row = sqlx::query(
                     "DELETE FROM one_time_pre_keys
@@ -257,7 +261,7 @@ pub async fn get_otpk_count(
     auth: AuthContext,
     State(state): State<AppState>,
 ) -> Result<Json<OtpkCountResponse>, (StatusCode, Json<serde_json::Value>)> {
-    let result = crate::db::with_rls_context(&state.db, auth.claims.org_id, |mut tx| Box::pin(async move {
+    let result = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| Box::pin(async move {
         let device_id: Option<uuid::Uuid> = sqlx::query_scalar(
             "SELECT id FROM devices WHERE user_id = $1 AND is_active = TRUE ORDER BY last_seen DESC LIMIT 1"
         )
@@ -287,10 +291,13 @@ pub async fn get_otpk_count(
             StatusCode::NOT_FOUND,
             Json(json!({"error": "No active device found"})),
         )),
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("DB Error: {}", e)})),
-        )),
+        Err(e) => {
+            tracing::error!("OTPK count query failed: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "An internal error occurred"})),
+            ))
+        }
     }
 }
 
@@ -323,7 +330,7 @@ pub async fn upload_otpks(
     }
     let upload_count = body.keys.len();
 
-    let result = crate::db::with_rls_context(&state.db, auth.claims.org_id, |mut tx| Box::pin(async move {
+    let result = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| Box::pin(async move {
         let device_id: Option<uuid::Uuid> = sqlx::query_scalar(
             "SELECT id FROM devices WHERE user_id = $1 AND is_active = TRUE ORDER BY last_seen DESC LIMIT 1"
         )
@@ -358,11 +365,14 @@ pub async fn upload_otpks(
             }
 
             let numeric_key_id = {
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
-                let mut h = DefaultHasher::new();
-                entry.key_id.hash(&mut h);
-                (h.finish() & 0x7FFF_FFFF) as i32
+                // Use SHA-256 for deterministic, collision-resistant UUID → i32 mapping.
+                use sha2::{Sha256, Digest};
+                let mut hasher = Sha256::new();
+                hasher.update(entry.key_id.as_bytes());
+                let hash = hasher.finalize();
+                // Take first 4 bytes as big-endian i32, masked to positive range.
+                let bytes: [u8; 4] = hash[..4].try_into().unwrap();
+                (i32::from_be_bytes(bytes) & 0x7FFF_FFFF)
             };
 
             sqlx::query(
@@ -382,9 +392,22 @@ pub async fn upload_otpks(
     })).await;
 
     match result {
-        Ok(Some(_)) => Ok(Json(UploadOtpksResponse {
-            uploaded: upload_count,
-        })),
+        Ok(Some(_)) => {
+            // Audit: OTPK upload
+            let _ = sqlx::query(
+                "INSERT INTO audit_logs (org_id, actor_id, action, details) VALUES ($1, $2, $3, $4)"
+            )
+            .bind(auth.claims.org_id)
+            .bind(auth.claims.sub)
+            .bind("OTPK_UPLOAD")
+            .bind(json!({"count": upload_count}))
+            .execute(&state.db)
+            .await;
+
+            Ok(Json(UploadOtpksResponse {
+                uploaded: upload_count,
+            }))
+        }
         Ok(None) => Err((
             StatusCode::NOT_FOUND,
             Json(json!({"error": "No active device found"})),

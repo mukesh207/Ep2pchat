@@ -14,11 +14,13 @@ export type AdminUser = {
   username?: string | null;
   status?: string;
   device_count?: number;
+  department?: string | null;
 };
 
 export type AdminDevice = {
   id: string;
   device_name: string;
+  alias?: string | null;
   registered_at: string;
   last_seen: string;
   is_active: boolean;
@@ -85,6 +87,41 @@ export function useAdmin(options?: {
     [],
   );
 
+  const approveBulk = useCallback(async (userIds: string[]): Promise<void> => {
+    await api.approveBulk(userIds);
+  }, []);
+
+  const denyBulk = useCallback(async (userIds: string[]): Promise<void> => {
+    await api.denyBulk(userIds);
+  }, []);
+
+  const updateDeviceAlias = useCallback(async (deviceId: string, alias: string): Promise<void> => {
+    await api.updateDeviceAlias(deviceId, alias);
+  }, []);
+
+  const nukeDevice = useCallback(async (deviceId: string): Promise<void> => {
+    await api.nukeDevice(deviceId);
+    if (currentDeviceId && currentDeviceId === deviceId) {
+      onRevocation?.();
+    }
+  }, [currentDeviceId, onRevocation]);
+
+  const fetchOrgSettings = useCallback(async (): Promise<api.OrgSettings> => {
+    return await api.getOrgSettings();
+  }, []);
+
+  const updateOrgSettings = useCallback(async (settings: Partial<api.OrgSettings>): Promise<void> => {
+    await api.updateOrgSettings(settings);
+  }, []);
+
+  const updateUserDepartment = useCallback(async (userId: string, department: string): Promise<void> => {
+    await api.requestJson(`/admin/users/${userId}/department`, {
+        method: 'POST',
+        headers: api.authHeaders(),
+        body: JSON.stringify({ department })
+    });
+  }, []);
+
   return {
     fetchPending,
     approveUser,
@@ -93,5 +130,12 @@ export function useAdmin(options?: {
     fetchUserDevices,
     revokeDevice,
     fetchAuditLog,
+    approveBulk,
+    denyBulk,
+    updateDeviceAlias,
+    nukeDevice,
+    fetchOrgSettings,
+    updateOrgSettings,
+    updateUserDepartment,
   };
 }

@@ -1,17 +1,20 @@
-import { useEffect, useMemo, useState } from "react";
-import { Download } from "lucide-react";
+import { Activity, Download, Play } from "lucide-react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import type { AuditLogRow } from "./useAdmin";
+import * as api from "../../api";
 
 function actionColor(action: string) {
   const upper = action.toUpperCase();
   if (upper.includes("APPROV")) return "var(--accent-success)";
   if (upper.includes("REVOK")) return "var(--accent-danger)";
+  if (upper.includes("NUKE")) return "var(--accent-danger)";
+  if (upper.includes("FAILED")) return "var(--accent-danger)";
+  if (upper.includes("SETTINGS")) return "var(--accent-teal)";
   return "var(--text-primary)";
 }
 
-function toCsvValue(value: unknown): string {
-  const text = typeof value === "string" ? value : JSON.stringify(value ?? "");
-  return `"${text.replace(/"/g, '""')}"`;
+function Yo(r: any) {
+  return `"${(typeof r == "string" ? r : JSON.stringify(r ?? "")).replace(/"/g, '""')}"`;
 }
 
 export default function AuditLog({
@@ -22,46 +25,92 @@ export default function AuditLog({
   const [logs, setLogs] = useState<AuditLogRow[]>([]);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
+  const [search, setSearch] = useState("");
+  const [filterAction, setFilterAction] = useState("");
+  const [isLive, setIsLive] = useState(false);
+  const intervalRef = useRef<number | null>(null);
 
-  const refresh = async (nextPage: number) => {
-    setLoading(true);
+  const refresh = async (nextPage: number, quiet = false) => {
+    if (!quiet) setLoading(true);
     try {
       const response = await fetchAuditLog(nextPage);
-      setLogs(response.logs);
-      setPage(response.page);
+      if (quiet) {
+        setLogs((prev) => {
+          const existingIds = new Set(prev.map(l => l.id));
+          const fresh = response.logs.filter(l => !existingIds.has(l.id));
+          if (fresh.length === 0) return prev;
+          return [...fresh, ...prev].slice(0, 100);
+        });
+      } else {
+        setLogs(response.logs);
+        setPage(response.page);
+      }
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   };
 
   useEffect(() => {
-    void refresh(page);
+    void refresh(1);
   }, []);
+
+  useEffect(() => {
+    if (isLive) {
+      intervalRef.current = window.setInterval(() => {
+        void refresh(1, true);
+      }, 5000);
+    } else {
+      if (intervalRef.current) window.clearInterval(intervalRef.current);
+    }
+    return () => {
+      if (intervalRef.current) window.clearInterval(intervalRef.current);
+    };
+  }, [isLive]);
 
   const canGoPrev = page > 1;
   const canGoNext = logs.length > 0;
 
-  const visibleRows = useMemo(() => logs, [logs]);
+  const visibleRows = useMemo(() => {
+    let result = logs;
+    const q = search.trim().toLowerCase();
+    if (q) {
+      result = result.filter(
+        (r) =>
+          r.actor_email?.toLowerCase().includes(q) ||
+          r.action.toLowerCase().includes(q) ||
+          JSON.stringify(r.details).toLowerCase().includes(q),
+      );
+    }
+    if (filterAction) {
+      result = result.filter((r) => r.action === filterAction);
+    }
+    return result;
+  }, [logs, search, filterAction]);
+
+  const uniqueActions = useMemo(() => {
+    const s = new Set<string>();
+    logs.forEach((l) => s.add(l.action));
+    return Array.from(s).sort();
+  }, [logs]);
 
   const exportCsv = () => {
+    void api.logSecurityEvent("AUDIT_LOG_EXPORT", { page, row_count: visibleRows.length });
     const header = ["timestamp", "actor", "action", "target", "details"].join(",");
     const rows = visibleRows.map((row) =>
       [
-        toCsvValue(row.created_at),
-        toCsvValue(row.actor_email ?? "SYSTEM"),
-        toCsvValue(row.action),
-        toCsvValue(row.target ?? ""),
-        toCsvValue(row.details),
+        Yo(row.created_at),
+        Yo(row.actor_email ?? "SYSTEM"),
+        Yo(row.action),
+        Yo(row.target ?? ""),
+        Yo(row.details),
       ].join(","),
     );
-
-    const blob = new Blob([[header, ...rows].join("\n")], { type: "text/csv;charset=utf-8" });
+    const blob = new Blob([[header, ...rows].join("\n")], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `audit-page-${page}.csv`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `trustline-audit-${new Date().toISOString()}.csv`;
+    a.click();
   };
 
   return (
@@ -69,10 +118,43 @@ export default function AuditLog({
       <div className="section-header" style={{ justifyContent: "space-between" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span className="section-header-title">AUDIT LOG</span>
-          <span className="section-header-count">Page {page}</span>
+          <span className="section-header-count">{isLive ? 'LIVE' : `Page ${page}`}</span>
         </div>
         <button className="btn btn-ghost btn-sm" onClick={exportCsv} disabled={visibleRows.length === 0}>
           <Download size={12} /> Export CSV
+        </button>
+      </div>
+
+      <div className="sidebar-search" style={{ display: "flex", gap: 8, maxWidth: "100%", marginBottom: 14 }}>
+        <div className="search-wrap" style={{ flex: 2 }}>
+          <input
+            className="input"
+            placeholder="Search by actor, action or details"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <select
+          className="input"
+          style={{ flex: 1, padding: "0 8px" }}
+          value={filterAction}
+          onChange={(e) => setFilterAction(e.target.value)}
+        >
+          <option value="">All Actions</option>
+          {uniqueActions.map((action) => (
+            <option key={action} value={action}>
+              {action}
+            </option>
+          ))}
+        </select>
+        
+        <button 
+          className={`btn ${isLive ? 'btn-teal' : 'btn-ghost'} btn-sm`}
+          style={{ gap: 6, minWidth: 100 }}
+          onClick={() => setIsLive(!isLive)}
+        >
+          {isLive ? <Activity size={12} className="spin-slow" /> : <Play size={12} />}
+          {isLive ? 'LIVE' : 'LIVE TAIL'}
         </button>
       </div>
 
@@ -88,23 +170,21 @@ export default function AuditLog({
                 <th>Timestamp</th>
                 <th>Actor</th>
                 <th>Action</th>
-                <th>Target</th>
                 <th>Details</th>
               </tr>
             </thead>
             <tbody>
               {visibleRows.map((row) => (
                 <tr key={row.id}>
-                  <td>{new Date(row.created_at).toLocaleString()}</td>
-                  <td>{row.actor_email ?? "SYSTEM"}</td>
-                  <td>
-                    <span style={{ color: actionColor(row.action), fontWeight: 600 }}>{row.action}</span>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    {new Date(row.created_at).toLocaleString()}
                   </td>
-                  <td>{String((row.details as any)?.target_user_id ?? (row.details as any)?.device_id ?? "-")}</td>
-                  <td>
-                    <code style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>
-                      {JSON.stringify(row.details)}
-                    </code>
+                  <td>{row.actor_email ?? "SYSTEM"}</td>
+                  <td style={{ fontWeight: 600, color: actionColor(row.action) }}>
+                    {row.action}
+                  </td>
+                  <td style={{ fontSize: "0.65rem", fontFamily: "var(--font-mono)" }}>
+                    {JSON.stringify(row.details)}
                   </td>
                 </tr>
               ))}
@@ -113,11 +193,19 @@ export default function AuditLog({
         </div>
       )}
 
-      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-        <button className="btn btn-ghost btn-sm" disabled={!canGoPrev || loading} onClick={() => void refresh(page - 1)}>
+      <div className="admin-pagination" style={{ marginTop: 14, display: "flex", gap: 8, justifyContent: "center" }}>
+        <button 
+          className="btn btn-ghost btn-sm" 
+          disabled={!canGoPrev || loading || isLive} 
+          onClick={() => void refresh(page - 1)}
+        >
           Previous
         </button>
-        <button className="btn btn-ghost btn-sm" disabled={!canGoNext || loading} onClick={() => void refresh(page + 1)}>
+        <button 
+          className="btn btn-ghost btn-sm" 
+          disabled={!canGoNext || loading || isLive} 
+          onClick={() => void refresh(page + 1)}
+        >
           Next
         </button>
       </div>

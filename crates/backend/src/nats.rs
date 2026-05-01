@@ -30,4 +30,15 @@ impl NatsService {
     pub fn connection_state(&self) -> Option<async_nats::connection::State> {
         self.client.as_ref().map(|client| client.connection_state())
     }
+
+    pub async fn purge_subject(&self, subject: String) {
+        if let Some(client) = &self.client {
+            let jetstream = async_nats::jetstream::new(client.clone());
+            // We assume a stream named "TRUSTLINE" exists that handles routing subjects.
+            // This matches the deployment configuration for Trustline.
+            if let Ok(stream) = jetstream.get_stream("TRUSTLINE").await {
+                let _ = stream.purge().filter(subject).await;
+            }
+        }
+    }
 }

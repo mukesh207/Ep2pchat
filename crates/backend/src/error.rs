@@ -24,14 +24,18 @@ impl IntoResponse for AppError {
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             AppError::Internal(msg) => {
+                // Log the full detail server-side; NEVER forward to the client.
                 tracing::error!("Internal error: {}", msg);
-                (StatusCode::INTERNAL_SERVER_ERROR, msg.clone())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "An internal error occurred".to_string(),
+                )
             }
             AppError::Database(err) => {
                 tracing::error!("Database error: {}", err);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "Internal database error".to_string(),
+                    "An internal error occurred".to_string(),
                 )
             }
         };

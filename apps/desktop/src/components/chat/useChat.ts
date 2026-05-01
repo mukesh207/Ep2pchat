@@ -48,30 +48,72 @@ export default function useChat({
       if (!result) return;
       const { conversationId, plaintext } = result;
 
-      const newMsg = {
-        id: payload.message_id, sender: payload.sender_device_id,
-        text: plaintext, timestamp: payload.timestamp, is_me: false, status: "received",
-      };
-      
+      let structured: any = { type: "text", body: plaintext };
       try {
-        await vault.saveMessage({
-          ...newMsg,
-          conversation_id: conversationId,
-          recipient_id: userId,
-          timestamp: payload.timestamp,
-          message_status: "received",
-        });
+        const parsed = JSON.parse(plaintext);
+        if (parsed.type) structured = parsed;
       } catch {}
-      
-      socket.send("MESSAGE_ACK", { message_id: payload.message_id });
-      setLastMessageByContact((prev: any) => ({ ...prev, [conversationId]: newMsg.text }));
-      setTypingByContact((prev: any) => ({ ...prev, [conversationId]: false }));
-      
-      if (activeContactId.current === conversationId) {
-        setMessages((prev: any) => [...prev, newMsg]);
-        socket.send("MESSAGE_READ", { message_id: payload.message_id });
+
+      if (structured.type === "text" || structured.type === "reply") {
+        const newMsg = {
+          id: payload.message_id, 
+          sender: payload.sender_device_id,
+          text: structured.body, 
+          timestamp: payload.timestamp, 
+          is_me: false, 
+          status: "received",
+          parent_id: structured.parent_id || null,
+          metadata: structured.metadata || {},
+          reactions: [],
+          is_edited: false,
+          is_deleted: false
+        };
+        
+        try {
+          await vault.saveMessage({
+            id: newMsg.id,
+            sender: newMsg.sender,
+            text: newMsg.text,
+            is_me: false,
+            conversation_id: conversationId,
+            recipient_id: userId,
+            timestamp: payload.timestamp,
+            message_status: "received",
+            parent_id: newMsg.parent_id,
+            metadata: newMsg.metadata
+          });
+        } catch {}
+        
+        socket.send("MESSAGE_ACK", { message_id: payload.message_id });
+        setLastMessageByContact((prev: any) => ({ ...prev, [conversationId]: newMsg.text }));
+        setTypingByContact((prev: any) => ({ ...prev, [conversationId]: false }));
+        
+        if (activeContactId.current === conversationId) {
+          setMessages((prev: any) => [...prev, newMsg]);
+          socket.send("MESSAGE_READ", { message_id: payload.message_id });
+        } else {
+          setUnreadByContact((prev: any) => ({ ...prev, [conversationId]: (prev[conversationId] || 0) + 1 }));
+        }
       } else {
-        setUnreadByContact((prev: any) => ({ ...prev, [conversationId]: (prev[conversationId] || 0) + 1 }));
+        // Event type (edit, delete, reaction)
+        await vault.saveMessageEvent({
+          id: payload.message_id,
+          target_msg_id: structured.target_id,
+          event_type: structured.type,
+          payload: structured
+        });
+        
+        socket.send("MESSAGE_ACK", { message_id: payload.message_id });
+
+        if (activeContactId.current === conversationId) {
+          setMessages((prev: any) => prev.map((m: any) => {
+            if (m.id !== structured.target_id) return m;
+            if (structured.type === 'edit') return { ...m, text: structured.body, is_edited: true };
+            if (structured.type === 'delete') return { ...m, is_deleted: true, text: "This message was deleted" };
+            if (structured.type === 'reaction') return { ...m, reactions: [...(m.reactions || []), structured.emoji] };
+            return m;
+          }));
+        }
       }
     } catch (err) {
       console.error("[ratchet] handleIncomingMessage failed:", err);

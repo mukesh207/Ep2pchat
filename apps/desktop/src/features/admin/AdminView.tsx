@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ClipboardList, LogOut, ShieldOff, UserRoundCheck, Users } from "lucide-react";
+import { AlertTriangle, ClipboardList, LogOut, Settings, ShieldOff, UserRoundCheck, Users } from "lucide-react";
 import PendingApprovals from "./PendingApprovals";
 import DeviceRevocation from "./DeviceRevocation";
 import AuditLog from "./AuditLog";
+import OrgSettings from "./OrgSettings";
 import { useAdmin, type AdminUser, type PendingUser } from "./useAdmin";
 
-type TabKey = "pending" | "devices" | "audit";
+type TabKey = "pending" | "devices" | "audit" | "settings";
 
 export default function AdminView({
   isAdmin,
@@ -18,65 +19,41 @@ export default function AdminView({
   onRevocation: () => void;
   onBack: () => void;
 }) {
+  const admin = useAdmin();
   const [activeTab, setActiveTab] = useState<TabKey>("pending");
-  const [pendingUsers, setPendingUsers] = useState<PendingUser[]>([]);
   const [users, setUsers] = useState<AdminUser[]>([]);
-  const [panelError, setPanelError] = useState("");
+  const [pending, setPending] = useState<PendingUser[]>([]);
 
-  const admin = useAdmin({
-    currentDeviceId,
-    onRevocation,
-  });
+  useEffect(() => {
+    if (!isAdmin) return;
+    void admin.fetchUsers().then((rows: AdminUser[]) => setUsers(rows));
+    void admin.fetchPending().then((rows: PendingUser[]) => setPending(rows));
+  }, [isAdmin, admin]);
 
   const tabs = useMemo(
     () => [
       { id: "pending" as const, label: "Pending Approvals", icon: <UserRoundCheck size={13} /> },
       { id: "devices" as const, label: "Device Management", icon: <Users size={13} /> },
       { id: "audit" as const, label: "Audit Log", icon: <ClipboardList size={13} /> },
+      { id: "settings" as const, label: "Organization Settings", icon: <Settings size={13} /> },
     ],
     [],
   );
 
   const refreshPending = async () => {
-    try {
-      const rows = await admin.fetchPending();
-      setPendingUsers(rows);
-      setPanelError("");
-    } catch (error: any) {
-      setPanelError(error?.message || "Failed to load pending approvals.");
-    }
+    const rows = await admin.fetchPending();
+    setPending(rows);
   };
-
-  const refreshUsers = async () => {
-    try {
-      const rows = await admin.fetchUsers();
-      setUsers(rows);
-      setPanelError("");
-    } catch (error: any) {
-      setPanelError(error?.message || "Failed to load users.");
-    }
-  };
-
-  useEffect(() => {
-    void refreshPending();
-    void refreshUsers();
-
-    const timer = window.setInterval(() => {
-      void refreshPending();
-    }, 30000);
-
-    return () => window.clearInterval(timer);
-  }, []);
 
   if (!isAdmin) {
     return (
-      <div className="app-container">
-        <div className="admin-wrap" style={{ margin: 20 }}>
-          <div className="workspace-alert">
-            <ShieldOff size={14} /> Permission denied. Admin role is required.
-          </div>
-          <button className="btn btn-ghost btn-sm" onClick={onBack} style={{ marginTop: 12 }}>
-            Back
+      <div className="admin-container">
+        <div className="admin-error">
+          <AlertTriangle size={48} />
+          <h1>Access Denied</h1>
+          <p>You do not have administrative privileges for this organization.</p>
+          <button className="btn btn-primary" onClick={onBack}>
+            Return to Chat
           </button>
         </div>
       </div>
@@ -84,49 +61,54 @@ export default function AdminView({
   }
 
   return (
-    <div className="admin-wrap">
+    <div className="admin-container">
       <header className="admin-header">
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <ShieldOff size={15} color="var(--accent-danger)" strokeWidth={1.5} />
-          <span className="admin-header-title">ADMIN CONSOLE</span>
+        <div className="admin-header-left">
+          <ShieldOff size={20} />
+          <div className="admin-header-titles">
+            <span className="admin-header-main">ADMIN CONSOLE</span>
+            <span className="admin-header-sub">Organization Governance</span>
+          </div>
         </div>
-        <button className="btn btn-ghost btn-sm" onClick={onBack}>
-          <LogOut size={12} /> Exit
-        </button>
+        <div className="admin-header-actions">
+          <button className="btn btn-ghost btn-sm" onClick={onBack}>
+            <LogOut size={14} /> Close Admin
+          </button>
+        </div>
       </header>
 
       <div className="admin-body">
-        <nav className="admin-nav">
+        <nav className="admin-sidebar">
           {tabs.map((tab) => (
-            <div
+            <button
               key={tab.id}
               className={`admin-nav-item${activeTab === tab.id ? " active" : ""}`}
               onClick={() => setActiveTab(tab.id)}
             >
               {tab.icon}
               {tab.label}
-              {tab.id === "pending" && pendingUsers.length > 0 ? (
-                <span className="section-header-count" style={{ marginLeft: "auto" }}>
-                  {pendingUsers.length}
-                </span>
-              ) : null}
-            </div>
+              {tab.id === "pending" && pending.length > 0 && (
+                <span className="admin-nav-badge">{pending.length}</span>
+              )}
+            </button>
           ))}
         </nav>
 
         <div className="admin-content">
-          {panelError ? (
-            <div className="workspace-alert" style={{ marginBottom: 14 }}>
-              <AlertTriangle size={12} />
-              {panelError}
-            </div>
-          ) : null}
-
           {activeTab === "pending" ? (
             <PendingApprovals
-              users={pendingUsers}
-              onApprove={admin.approveUser}
+              users={pending}
+              onApprove={async (id) => {
+                await admin.approveUser(id);
+                // Also update the full users list
+                void admin.fetchUsers().then(setUsers);
+              }}
               onDeny={admin.denyUser}
+              onApproveBulk={async (ids) => {
+                await admin.approveBulk(ids);
+                void admin.fetchUsers().then(setUsers);
+              }}
+              onDenyBulk={admin.denyBulk}
               onRefresh={refreshPending}
             />
           ) : null}
@@ -135,11 +117,21 @@ export default function AdminView({
             <DeviceRevocation
               users={users}
               fetchDevices={admin.fetchUserDevices}
-              revokeDevice={admin.revokeDevice}
+              revokeDevice={async (id) => {
+                await admin.revokeDevice(id);
+                if (id === currentDeviceId) {
+                  onRevocation();
+                }
+              }}
+              updateAlias={admin.updateDeviceAlias}
+              nukeDevice={admin.nukeDevice}
+              updateDepartment={admin.updateUserDepartment}
             />
           ) : null}
 
           {activeTab === "audit" ? <AuditLog fetchAuditLog={admin.fetchAuditLog} /> : null}
+
+          {activeTab === "settings" ? <OrgSettings /> : null}
         </div>
       </div>
     </div>

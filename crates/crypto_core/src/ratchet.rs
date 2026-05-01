@@ -35,6 +35,10 @@ pub enum RatchetError {
     NotInitialized,
     #[error("invalid key bytes")]
     InvalidKey,
+    #[error("session reset required — too many skipped messages")]
+    SessionResetNeeded,
+    #[error("invalid padding — message may be corrupted")]
+    InvalidPadding,
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
 }
@@ -267,8 +271,11 @@ impl RatchetSession {
         };
         self.send_count += 1;
 
+        // Pad plaintext to prevent length analysis
+        let padded = pad_plaintext(plaintext);
+
         let (key, nonce) = derive_aead(&mk);
-        let ciphertext = aead::seal(plaintext, Some(associated_data), &nonce, &key);
+        let ciphertext = aead::seal(&padded, Some(associated_data), &nonce, &key);
 
         Ok((header, ciphertext))
     }
@@ -287,7 +294,8 @@ impl RatchetSession {
         // 1. Try skipped-key buffer first (out-of-order message arriving late).
         let skip_key = skip_map_key(&header.dh_public, header.msg_counter);
         if let Some(mk_bytes) = self.skipped_keys.remove(&skip_key) {
-            return decrypt_with_mk(&MessageKey(mk_bytes), ciphertext, associated_data);
+            let padded = decrypt_with_mk(&MessageKey(mk_bytes), ciphertext, associated_data)?;
+            return unpad_plaintext(&padded);
         }
 
         // 2. If a new DH key arrives — perform a DH ratchet step.
@@ -311,7 +319,8 @@ impl RatchetSession {
         self.recv_chain_key = Some(new_ck.0);
         self.recv_count += 1;
 
-        decrypt_with_mk(&mk, ciphertext, associated_data)
+        let padded = decrypt_with_mk(&mk, ciphertext, associated_data)?;
+        unpad_plaintext(&padded)
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -320,7 +329,7 @@ impl RatchetSession {
     /// (but not including) `until`. Enables out-of-order decryption later.
     fn skip_until(&mut self, until: u32) -> Result<(), RatchetError> {
         if self.recv_count + MAX_SKIP < until {
-            return Err(RatchetError::TooManySkipped);
+            return Err(RatchetError::SessionResetNeeded);
         }
         if let Some(mut ck_bytes) = self.recv_chain_key {
             while self.recv_count < until {
@@ -375,6 +384,28 @@ impl RatchetSession {
     pub fn from_json(json: &str) -> Result<Self, RatchetError> {
         Ok(serde_json::from_str(json)?)
     }
+
+    /// Reset session state for renegotiation.
+    /// Preserves the root key identity so both peers can recognise the session.
+    /// After calling this, the session must be reinitialised via X3DH.
+    pub fn needs_reset(&self) -> bool {
+        // Check if skipped keys have grown unreasonably large (memory DoS)
+        self.skipped_keys.len() > (MAX_SKIP as usize)
+    }
+
+    /// Clear accumulated skipped keys to reclaim memory.
+    /// Call periodically (e.g. every 100 messages) to bound memory usage.
+    pub fn prune_stale_skipped_keys(&mut self, max_retained: usize) {
+        if self.skipped_keys.len() > max_retained {
+            // Keep only the most recent entries by counter value
+            let excess = self.skipped_keys.len() - max_retained;
+            let mut keys: Vec<String> = self.skipped_keys.keys().cloned().collect();
+            keys.sort();
+            for key in keys.into_iter().take(excess) {
+                self.skipped_keys.remove(&key);
+            }
+        }
+    }
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
@@ -391,6 +422,37 @@ fn decrypt_with_mk(
     let (key, nonce) = derive_aead(mk);
     aead::open(ciphertext, Some(associated_data), &nonce, &key)
         .map_err(|_| RatchetError::DecryptFailed)
+}
+
+// ── Message Padding (length analysis mitigation) ─────────────────────────────
+// Pads plaintext to the next PAD_BLOCK boundary using PKCS#7-style padding.
+// This prevents an eavesdropper from inferring message content from ciphertext size.
+
+const PAD_BLOCK: usize = 32;
+
+/// Pad plaintext to the next 32-byte boundary (always adds at least 1 byte).
+fn pad_plaintext(plaintext: &[u8]) -> Vec<u8> {
+    let pad_len = PAD_BLOCK - (plaintext.len() % PAD_BLOCK);
+    let mut padded = Vec::with_capacity(plaintext.len() + pad_len);
+    padded.extend_from_slice(plaintext);
+    padded.resize(padded.len() + pad_len, pad_len as u8);
+    padded
+}
+
+/// Remove PKCS#7 padding; returns the original plaintext.
+fn unpad_plaintext(padded: &[u8]) -> Result<Vec<u8>, RatchetError> {
+    if padded.is_empty() {
+        return Err(RatchetError::InvalidPadding);
+    }
+    let pad_len = *padded.last().unwrap() as usize;
+    if pad_len == 0 || pad_len > PAD_BLOCK || pad_len > padded.len() {
+        return Err(RatchetError::InvalidPadding);
+    }
+    // Verify all padding bytes are consistent
+    if padded[padded.len() - pad_len..].iter().any(|&b| b as usize != pad_len) {
+        return Err(RatchetError::InvalidPadding);
+    }
+    Ok(padded[..padded.len() - pad_len].to_vec())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

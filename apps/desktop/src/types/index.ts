@@ -11,6 +11,7 @@ export enum WsMessageType {
   MESSAGE_STATUS = "MESSAGE_STATUS",
   MESSAGE_CONFIRM = "MESSAGE_CONFIRM",
   TYPING_EVENT = "TYPING_EVENT",
+  PRESENCE_UPDATE = "PRESENCE_UPDATE",
   KEYS_REQUEST = "KEYS_REQUEST",
   KEYS_RESPONSE = "KEYS_RESPONSE",
   DEVICE_REVOKED = "DEVICE_REVOKED",
@@ -22,6 +23,8 @@ export interface Contact {
   email: string;
   username?: string;
   status?: "pending_approval" | "active" | "suspended" | "revoked";
+  presence_status?: "online" | "offline" | "away";
+  last_seen?: string;
   device_count?: number;
   devices?: DeviceBundle[];
 }
@@ -48,6 +51,7 @@ export type RootView = "AUTH" | "CHAT" | "ADMIN";
 export interface SessionState {
   userId: string;
   orgId: string;
+  email: string;
   isAdmin: boolean;
 }
 

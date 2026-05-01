@@ -188,6 +188,27 @@ pub async fn ws_handler(
 
 // ── Core Socket Handler ─────────────────────────────────────────────────────
 
+async fn broadcast_presence(state: &AppState, org_id: Uuid, user_id: Uuid, status: &str) {
+    let subject = format!("presence.org.{}", org_id);
+    let event = json!({
+        "type": "PRESENCE_UPDATE",
+        "payload": { "user_id": user_id, "status": status }
+    });
+    if let Ok(payload_bytes) = serde_json::to_vec(&event) {
+        state.nats.publish(subject, payload_bytes).await;
+    }
+
+    let status_string = status.to_string();
+    let _ = crate::db::with_rls_context(&state.db, org_id, move |tx| Box::pin(async move {
+        sqlx::query("UPDATE users SET presence_status = $1 WHERE id = $2 AND org_id = $3")
+            .bind(status_string)
+            .bind(user_id)
+            .bind(org_id)
+            .execute(&mut *tx)
+            .await
+    })).await;
+}
+
 async fn handle_socket(socket: WebSocket, state: AppState, device_id: Uuid, claims: Claims) {
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -204,10 +225,13 @@ async fn handle_socket(socket: WebSocket, state: AppState, device_id: Uuid, clai
         "WebSocket connected"
     );
 
+    // Broadcast online presence
+    broadcast_presence(&state, org_id, user_id, "online").await;
+
     // ── Offline Message Delivery ─────────────────────────────────────────
     // Flush any messages persisted while this device was offline.
     // NOTE: Do NOT mark as delivered here - wait for client MESSAGE_ACK after successful decrypt.
-    let pending = crate::db::with_rls_context(&state.db, org_id, |mut tx| Box::pin(async move {
+    let pending = crate::db::with_rls_context(&state.db, org_id, |tx| Box::pin(async move {
         sqlx::query(
             "SELECT em.id, em.sender_device_id, d.user_id AS sender_user_id, em.ciphertext,
                     em.sender_identity_key, em.ephemeral_public_key, em.ratchet_header, em.created_at
@@ -378,6 +402,12 @@ async fn handle_socket(socket: WebSocket, state: AppState, device_id: Uuid, clai
 
     // ── Cleanup ─────────────────────────────────────────────────────────
     state.ws.connections.remove(&device_id);
+
+    // Broadcast offline presence
+    let is_still_online = state.ws.connections.iter().any(|entry| entry.value().user_id == user_id && *entry.key() != device_id);
+    if !is_still_online {
+        broadcast_presence(&state, org_id, user_id, "offline").await;
+    }
 
     // Unsubscribe from NATS (fire-and-forget on task abort)
     tracing::info!(

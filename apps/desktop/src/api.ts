@@ -1,22 +1,7 @@
 import { startRegistration, startAuthentication } from '@simplewebauthn/browser';
 import { invoke } from '@tauri-apps/api/core';
 import type { KeyUploadPayload } from './types';
-
-function trimTrailingSlash(value: string) {
-    return value.replace(/\/+$/, "");
-}
-
-function resolveApiBase() {
-    const configuredBase = import.meta.env.VITE_API_BASE_URL?.trim();
-    if (configuredBase) {
-        return trimTrailingSlash(configuredBase);
-    }
-
-    return '/api/v1';
-}
-
-const API_BASE = resolveApiBase();
-const ADMIN_BOOTSTRAP_SETUP_TOKEN = import.meta.env.VITE_ADMIN_BOOTSTRAP_SETUP_TOKEN?.trim() ?? "";
+import { API_BASE_URL, ADMIN_BOOTSTRAP_SETUP_TOKEN } from './lib/config';
 
 let authToken = "";
 
@@ -28,20 +13,33 @@ export function getToken() {
     return authToken;
 }
 
-function authHeaders() {
+export function authHeaders() {
     return {
         'Content-Type': 'application/json',
         ...(authToken ? { 'Authorization': `Bearer ${authToken}` } : {})
     };
 }
 
-async function requestJson(path: string, init?: RequestInit) {
-    const res = await fetch(`${API_BASE}${path}`, init);
+export async function requestJson(path: string, init?: RequestInit) {
+    const res = await fetch(`${API_BASE_URL}${path}`, init);
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data?.error) {
         throw new Error(data?.error || `Request failed with status ${res.status}`);
     }
     return data;
+}
+
+export function canAttemptAdminBootstrap(): boolean {
+    return ADMIN_BOOTSTRAP_SETUP_TOKEN.length > 0;
+}
+
+export async function checkServerHealth(): Promise<boolean> {
+    try {
+        const res = await fetch(`${API_BASE_URL}/health`);
+        return res.ok;
+    } catch {
+        return false;
+    }
 }
 
 export async function requestAccess(email: string) {
@@ -66,10 +64,6 @@ export async function adminBootstrap(email: string) {
             setup_token: ADMIN_BOOTSTRAP_SETUP_TOKEN || undefined,
         })
     });
-}
-
-export function canAttemptAdminBootstrap(): boolean {
-    return Boolean(ADMIN_BOOTSTRAP_SETUP_TOKEN);
 }
 
 export async function registerPasskey(userId: string) {
@@ -163,6 +157,59 @@ export async function getAuditLogs(page: number = 1, pageSize: number = 50) {
     return requestJson(`/admin/audit?page=${page}&page_size=${pageSize}`, { headers: authHeaders() });
 }
 
+export async function approveBulk(userIds: string[]) {
+    return requestJson('/admin/bulk-approve', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ user_ids: userIds })
+    });
+}
+
+export async function denyBulk(userIds: string[]) {
+    return requestJson('/admin/bulk-deny', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ user_ids: userIds })
+    });
+}
+
+export async function updateDeviceAlias(deviceId: string, alias: string) {
+    return requestJson(`/admin/devices/${deviceId}/alias`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ alias })
+    });
+}
+
+export async function nukeDevice(deviceId: string) {
+    return requestJson(`/admin/devices/${deviceId}/nuke`, {
+        method: 'POST',
+        headers: authHeaders(),
+    });
+}
+
+export interface OrgSettings {
+    audit_retention_days: number;
+    force_rls: boolean;
+    branding: {
+        primary_color: string;
+        workspace_name: string;
+    };
+    is_maintenance_mode: boolean;
+}
+
+export async function getOrgSettings(): Promise<OrgSettings> {
+    return requestJson('/admin/settings', { headers: authHeaders() });
+}
+
+export async function updateOrgSettings(settings: Partial<OrgSettings>) {
+    return requestJson('/admin/settings', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify(settings)
+    });
+}
+
 // Legacy wrappers kept for compatibility with older components/tests.
 export async function approveUserLegacy(userId: string) {
     return requestJson('/admin/approve-user', {
@@ -219,3 +266,12 @@ export async function uploadKeys(payload: KeyUploadPayload) {
 export async function getUserKeys(userId: string) {
     return requestJson(`/keys/${userId}`, { headers: authHeaders() });
 }
+
+export async function logSecurityEvent(action: string, details: any) {
+    return requestJson('/users/audit/log-event', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ action, details })
+    });
+}
+

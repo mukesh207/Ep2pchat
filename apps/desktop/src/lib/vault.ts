@@ -131,10 +131,19 @@ export async function initVault() {
                 conversation_id TEXT,
                 sender_id TEXT,
                 recipient_id TEXT,
+                parent_id TEXT,
                 content TEXT,
+                metadata TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 is_me BOOLEAN,
                 message_status TEXT DEFAULT 'sent'
+            )`,
+            `CREATE TABLE IF NOT EXISTS message_events (
+                id TEXT PRIMARY KEY,
+                target_msg_id TEXT,
+                event_type TEXT,
+                payload TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )`,
             `CREATE TABLE IF NOT EXISTS user_config (
                 key TEXT PRIMARY KEY,
@@ -173,15 +182,11 @@ export async function initVault() {
             await openedDb.execute(statement);
         }
 
-        try {
-            await openedDb.execute("ALTER TABLE messages ADD COLUMN temp_id TEXT");
-        } catch {}
-        try {
-            await openedDb.execute("ALTER TABLE messages ADD COLUMN conversation_id TEXT");
-        } catch {}
-        try {
-            await openedDb.execute("ALTER TABLE messages ADD COLUMN message_status TEXT DEFAULT 'sent'");
-        } catch {}
+        try { await openedDb.execute("ALTER TABLE messages ADD COLUMN temp_id TEXT"); } catch {}
+        try { await openedDb.execute("ALTER TABLE messages ADD COLUMN conversation_id TEXT"); } catch {}
+        try { await openedDb.execute("ALTER TABLE messages ADD COLUMN message_status TEXT DEFAULT 'sent'"); } catch {}
+        try { await openedDb.execute("ALTER TABLE messages ADD COLUMN parent_id TEXT"); } catch {}
+        try { await openedDb.execute("ALTER TABLE messages ADD COLUMN metadata TEXT"); } catch {}
 
         try {
             // One-time backfill if FTS index is empty but messages exist (upgrade scenario)
@@ -259,22 +264,60 @@ export async function saveMessage(msg: {
     recipient_id?: string | null,
     timestamp?: string,
     message_status?: string,
+    parent_id?: string | null,
+    metadata?: any,
 }) {
     const vault = await initVault();
     await vault.execute(
-        "INSERT OR REPLACE INTO messages (id, temp_id, conversation_id, sender_id, recipient_id, content, timestamp, is_me, message_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        `INSERT INTO messages (id, temp_id, conversation_id, sender_id, recipient_id, parent_id, content, metadata, timestamp, is_me, message_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+            message_status = excluded.message_status,
+            content = COALESCE(excluded.content, content),
+            metadata = COALESCE(excluded.metadata, metadata)`,
         [
             msg.id,
             msg.temp_id ?? null,
             msg.conversation_id ?? null,
             msg.sender,
             msg.recipient_id ?? null,
+            msg.parent_id || null,
             msg.text,
+            msg.metadata ? JSON.stringify(msg.metadata) : null,
             msg.timestamp ?? new Date().toISOString(),
-            msg.is_me,
+            msg.is_me ? 1 : 0,
             msg.message_status ?? (msg.is_me ? "sent" : "received"),
         ]
     );
+}
+
+/**
+ * Imports message data into the vault.
+ */
+export async function importVaultData(data: any[]): Promise<void> {
+    const vault = await initVault();
+    await vault.execute("BEGIN");
+    try {
+        for (const m of data) {
+            await saveMessage({
+                id: m.id,
+                temp_id: m.temp_id,
+                sender: m.sender_id,
+                text: m.content,
+                is_me: m.is_me === 1 || m.is_me === true,
+                conversation_id: m.conversation_id,
+                recipient_id: m.recipient_id,
+                timestamp: m.timestamp,
+                message_status: m.message_status,
+                parent_id: m.parent_id,
+                metadata: m.metadata ? (typeof m.metadata === 'string' ? JSON.parse(m.metadata) : m.metadata) : null
+            });
+        }
+        await vault.execute("COMMIT");
+    } catch (e) {
+        await vault.execute("ROLLBACK");
+        throw e;
+    }
 }
 
 export async function reconcileTempMessageId(tempId: string, serverMessageId: string, timestamp?: string) {
@@ -295,14 +338,69 @@ export async function updateMessageStatus(messageId: string, status: string) {
     );
 }
 
+export async function saveMessageEvent(ev: { id: string, target_msg_id: string, event_type: string, payload: any }) {
+    const vault = await initVault();
+    await vault.execute(
+        `INSERT INTO message_events (id, target_msg_id, event_type, payload)
+         VALUES (?, ?, ?, ?)`,
+        [ev.id, ev.target_msg_id, ev.event_type, JSON.stringify(ev.payload)]
+    );
+}
+
 export async function getMessages(contactId: string) {
     const vault = await initVault();
-    return await vault.select(
+    const baseMessages = await vault.select<any[]>(
         `SELECT * FROM messages
          WHERE conversation_id = ? OR sender_id = ? OR recipient_id = ?
          ORDER BY timestamp ASC`,
         [contactId, contactId, contactId]
     );
+
+    const events = await vault.select<any[]>(
+        `SELECT e.* FROM message_events e
+         JOIN messages m ON e.target_msg_id = m.id
+         WHERE m.conversation_id = ? OR m.sender_id = ? OR m.recipient_id = ?
+         ORDER BY e.timestamp ASC`,
+        [contactId, contactId, contactId]
+    );
+
+    // Resolve final state
+    return baseMessages.map(m => {
+        const msg = { 
+            id: m.id,
+            sender: m.sender_id,
+            text: m.content,
+            timestamp: m.timestamp,
+            is_me: m.is_me === 1 || m.is_me === true,
+            status: m.message_status,
+            parent_id: m.parent_id,
+            reactions: [] as string[], 
+            is_deleted: false,
+            is_edited: false,
+            metadata: {} as any
+        };
+        
+        if (m.metadata) {
+            try { msg.metadata = JSON.parse(m.metadata); } catch {}
+        }
+
+        const msgEvents = events.filter(e => e.target_msg_id === m.id);
+        for (const e of msgEvents) {
+            let payload: any = {};
+            try { payload = JSON.parse(e.payload); } catch {}
+
+            if (e.event_type === 'edit') {
+                msg.text = payload.body;
+                msg.is_edited = true;
+            } else if (e.event_type === 'delete') {
+                msg.is_deleted = true;
+                msg.text = "This message was deleted";
+            } else if (e.event_type === 'reaction') {
+                msg.reactions.push(payload.emoji);
+            }
+        }
+        return msg;
+    });
 }
 
 export async function searchMessages(contactId: string, query: string) {
@@ -418,4 +516,12 @@ export async function localOtpkCount(): Promise<number> {
         "SELECT COUNT(*) as count FROM otpk_private_keys WHERE consumed = 0"
     );
     return row[0]?.count ?? 0;
+}
+
+/**
+ * Exports all messages from the local vault as a JSON object.
+ */
+export async function exportVaultData(): Promise<any[]> {
+    const vault = await initVault();
+    return vault.select<any[]>("SELECT * FROM messages ORDER BY timestamp ASC");
 }

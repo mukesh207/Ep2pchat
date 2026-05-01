@@ -63,6 +63,7 @@ pub struct Claims {
     pub exp: usize,
 }
 
+#[derive(Clone)]
 pub struct AuthContext {
     pub claims: Claims,
 }
@@ -204,6 +205,7 @@ async fn admin_bootstrap(
 #[derive(Deserialize)]
 pub struct RequestAccessPayload {
     pub email: String,
+    pub metadata: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -226,9 +228,10 @@ pub async fn request_access(
     }
     let domain = domain_part.to_string();
     let email_for_insert = email.clone();
+    let metadata = payload.metadata.unwrap_or(json!({}));
 
     // RLS: org_id scoped
-    let res = crate::db::with_rls_context(&state.db, Uuid::nil(), |mut tx| Box::pin(async move {
+    let res = crate::db::with_rls_context(&state.db, Uuid::nil(), |tx| Box::pin(async move {
         let org_record = sqlx::query(
             "INSERT INTO organizations (domain, name) VALUES ($1, $2) ON CONFLICT (domain) DO UPDATE SET domain=EXCLUDED.domain RETURNING id"
         )
@@ -245,10 +248,14 @@ pub async fn request_access(
             .await?;
 
         let user_record = sqlx::query(
-            "INSERT INTO users (org_id, email, status) VALUES ($1, $2, 'pending_approval') ON CONFLICT (org_id, email) DO UPDATE SET status=users.status RETURNING id, status"
+            "INSERT INTO users (org_id, email, status, request_metadata) 
+             VALUES ($1, $2, 'pending_approval', $3) 
+             ON CONFLICT (org_id, email) DO UPDATE SET request_metadata = EXCLUDED.request_metadata
+             RETURNING id, status"
         )
         .bind(org_id)
         .bind(&email_for_insert)
+        .bind(metadata)
         .fetch_one(&mut *tx)
         .await?;
 
@@ -284,7 +291,7 @@ pub async fn register_passkey_begin(
     State(state): State<AppState>,
     Json(payload): Json<RegisterBeginPayload>,
 ) -> Json<Value> {
-    let res = crate::db::with_rls_context(&state.db, Uuid::nil(), |mut tx| {
+    let res = crate::db::with_rls_context(&state.db, Uuid::nil(), |tx| {
         Box::pin(async move {
             let user_row = sqlx::query("SELECT org_id, email, status FROM users WHERE id = $1")
                 .bind(payload.user_id)
@@ -347,7 +354,7 @@ pub async fn register_passkey_begin(
     let reg_state_json = serde_json::to_value(&reg_state).unwrap();
     let expires_at = chrono::Utc::now() + chrono::Duration::minutes(5);
 
-    let store_res = crate::db::with_rls_context(&state.db, org_id, |mut tx| Box::pin(async move {
+    let store_res = crate::db::with_rls_context(&state.db, org_id, |tx| Box::pin(async move {
         sqlx::query(
             "INSERT INTO webauthn_sessions (user_id, org_id, challenge, session_type, expires_at) VALUES ($1, $2, $3, 'registration', $4)"
         )
@@ -376,7 +383,7 @@ pub async fn register_passkey_complete(
     State(state): State<AppState>,
     Json(payload): Json<RegisterCompletePayload>,
 ) -> Json<Value> {
-    let session_res = crate::db::with_rls_context(&state.db, Uuid::nil(), |mut tx| Box::pin(async move {
+    let session_res = crate::db::with_rls_context(&state.db, Uuid::nil(), |tx| Box::pin(async move {
         let session_row = sqlx::query(
             "DELETE FROM webauthn_sessions WHERE user_id = $1 AND session_type = 'registration' AND expires_at > NOW() RETURNING challenge, org_id"
         )
@@ -413,7 +420,7 @@ pub async fn register_passkey_complete(
     let passkey_json = serde_json::to_value(&passkey).unwrap();
     let cred_id = passkey.cred_id().clone();
 
-    let insert_res = crate::db::with_rls_context(&state.db, org_id, |mut tx| Box::pin(async move {
+    let insert_res = crate::db::with_rls_context(&state.db, org_id, |tx| Box::pin(async move {
         sqlx::query(
             "INSERT INTO passkeys (user_id, org_id, passkey_id, passkey_data) VALUES ($1, $2, $3, $4)"
         )
@@ -443,10 +450,10 @@ pub async fn login_begin(
 ) -> Json<Value> {
     let email = payload.email.trim().to_lowercase();
 
-    let start_res = crate::db::with_rls_context(&state.db, Uuid::nil(), |mut tx| {
+    let start_res = crate::db::with_rls_context(&state.db, Uuid::nil(), |tx| {
         Box::pin(async move {
             let user_row =
-                sqlx::query("SELECT id, org_id FROM users WHERE email = $1 AND status = 'active'")
+                sqlx::query("SELECT id, org_id, is_admin FROM users WHERE email = $1 AND status = 'active'")
                     .bind(&email)
                     .fetch_optional(&mut *tx)
                     .await?;
@@ -458,6 +465,18 @@ pub async fn login_begin(
 
             let user_id: Uuid = row.get("id");
             let org_id: Uuid = row.get("org_id");
+            let is_admin: bool = row.get::<Option<bool>, _>("is_admin").unwrap_or(false);
+
+            // Check maintenance mode
+            let org_row = sqlx::query("SELECT is_maintenance_mode FROM organizations WHERE id = $1")
+                .bind(org_id)
+                .fetch_one(&mut *tx)
+                .await?;
+            let is_maintenance: bool = org_row.get::<Option<bool>, _>("is_maintenance_mode").unwrap_or(false);
+
+            if is_maintenance && !is_admin {
+                return Err(sqlx::Error::Decode("MAINTENANCE_MODE".into()));
+            }
 
             sqlx::query("SELECT set_config('app.current_org_id', $1, true)")
                 .bind(org_id.to_string())
@@ -485,7 +504,13 @@ pub async fn login_begin(
 
     let (user_id, org_id, passkeys) = match start_res {
         Ok(t) => t,
-        Err(e) => return Json(json!({"error": format!("DB error: {}", e)})),
+        Err(e) => {
+            let err_str = e.to_string();
+            if err_str.contains("MAINTENANCE_MODE") {
+                return Json(json!({"error": "MAINTENANCE_MODE"}));
+            }
+            return Json(json!({"error": format!("DB error: {}", e)}));
+        }
     };
 
     if passkeys.is_empty() {
@@ -501,7 +526,7 @@ pub async fn login_begin(
     let auth_state_json = serde_json::to_value(&auth_state).unwrap();
     let expires_at = chrono::Utc::now() + chrono::Duration::minutes(5);
 
-    let store_res = crate::db::with_rls_context(&state.db, org_id, |mut tx| Box::pin(async move {
+    let store_res = crate::db::with_rls_context(&state.db, org_id, |tx| Box::pin(async move {
         sqlx::query(
             "INSERT INTO webauthn_sessions (user_id, org_id, challenge, session_type, expires_at) VALUES ($1, $2, $3, 'authentication', $4)"
         )
@@ -530,7 +555,7 @@ pub async fn login_complete(
     State(state): State<AppState>,
     Json(payload): Json<LoginCompletePayload>,
 ) -> Json<Value> {
-    let session_res = crate::db::with_rls_context(&state.db, Uuid::nil(), |mut tx| Box::pin(async move {
+    let session_res = crate::db::with_rls_context(&state.db, Uuid::nil(), |tx| Box::pin(async move {
         let session_row = sqlx::query(
             "DELETE FROM webauthn_sessions WHERE user_id = $1 AND session_type = 'authentication' AND expires_at > NOW() RETURNING challenge, org_id"
         )
@@ -567,7 +592,7 @@ pub async fn login_complete(
     let cred_id = auth_verify.cred_id().clone();
     let passkey_json = serde_json::to_value(&auth_verify).unwrap();
 
-    let final_res = crate::db::with_rls_context(&state.db, org_id, |mut tx| {
+    let final_res = crate::db::with_rls_context(&state.db, org_id, |tx| {
         Box::pin(async move {
             let _ = sqlx::query(
                 "UPDATE passkeys SET passkey_data = $1 WHERE passkey_id = $2 AND user_id = $3",

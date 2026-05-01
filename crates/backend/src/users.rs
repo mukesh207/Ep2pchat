@@ -19,14 +19,64 @@ pub fn router() -> Router<AppState> {
         .route("/users", get(get_users))
         .route("/devices", get(get_my_devices))
         .route("/revoke-device", post(revoke_own_device))
+        .route("/audit/log-event", post(log_security_event))
+}
+
+#[derive(Deserialize)]
+pub struct LogEventPayload {
+    pub action: String,
+    pub details: Value,
+}
+
+pub async fn log_security_event(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Json(payload): Json<LogEventPayload>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    // Only allow specific white-listed actions to be logged via this endpoint
+    let allowed_actions = ["DATA_EXPORT", "VAULT_BACKUP", "AUDIT_LOG_EXPORT"];
+    if !allowed_actions.contains(&payload.action.as_str()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Invalid action"})),
+        ));
+    }
+
+    let res = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO audit_logs (org_id, actor_id, action, details) VALUES ($1, $2, $3, $4)",
+            )
+            .bind(auth.claims.org_id)
+            .bind(auth.claims.sub)
+            .bind(&payload.action)
+            .bind(&payload.details)
+            .execute(&mut *tx)
+            .await
+        })
+    })
+    .await;
+
+    match res {
+        Ok(_) => Ok(Json(json!({ "status": "success" }))),
+        Err(e) => {
+            tracing::error!("Failed to log security event: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "An internal error occurred"})),
+            ))
+        }
+    }
 }
 
 #[derive(Serialize)]
-pub struct UserInfo {
-    pub id: Uuid,
-    pub email: String,
-    pub username: Option<String>,
-    pub device_count: i64,
+struct UserInfo {
+    id: Uuid,
+    email: String,
+    username: Option<String>,
+    device_count: i64,
+    presence_status: Option<String>,
+    department: Option<String>,
 }
 
 pub async fn get_users(
@@ -34,10 +84,10 @@ pub async fn get_users(
     auth: AuthContext,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     // RLS: org_id scoped
-    let records = crate::db::with_rls_context(&state.db, auth.claims.org_id, |mut tx| {
+    let records = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
         Box::pin(async move {
             sqlx::query(
-                "SELECT u.id, u.email, u.username, COUNT(d.id) AS device_count
+                "SELECT u.id, u.email, u.username, u.presence_status, u.department, COUNT(d.id) AS device_count
              FROM users u
              LEFT JOIN devices d ON u.id = d.user_id AND d.is_active = TRUE
              WHERE u.status = 'active' AND u.org_id = $1
@@ -59,14 +109,19 @@ pub async fn get_users(
                     email: row.get("email"),
                     username: row.get("username"),
                     device_count: row.get("device_count"),
+                    presence_status: row.get("presence_status"),
+                    department: row.get("department"),
                 });
             }
             Ok(Json(json!({"users": users})))
         }
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )),
+        Err(e) => {
+            tracing::error!("Failed to list users: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "An internal error occurred"})),
+            ))
+        }
     }
 }
 
@@ -83,7 +138,7 @@ pub async fn get_my_devices(
     auth: AuthContext,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     // RLS: org_id scoped
-    let rows = crate::db::with_rls_context(&state.db, auth.claims.org_id, |mut tx| {
+    let rows = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
         Box::pin(async move {
             sqlx::query(
                 "SELECT id, device_name, is_active, last_seen
@@ -112,10 +167,13 @@ pub async fn get_my_devices(
                 .collect();
             Ok(Json(json!({ "devices": devices })))
         }
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )),
+        Err(e) => {
+            tracing::error!("Failed to list own devices: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "An internal error occurred"})),
+            ))
+        }
     }
 }
 
@@ -130,7 +188,7 @@ pub async fn revoke_own_device(
     Json(payload): Json<RevokeOwnDevicePayload>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     // RLS: org_id scoped
-    let res = crate::db::with_rls_context(&state.db, auth.claims.org_id, |mut tx| {
+    let res = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
         Box::pin(async move {
             let row = sqlx::query(
                 "UPDATE devices
@@ -168,6 +226,10 @@ pub async fn revoke_own_device(
 
     match res {
         Ok(Some(_)) => {
+            // Purge pending messages from NATS JetStream
+            let routing_subject = format!("routing.{}", payload.device_id);
+            state.nats.purge_subject(routing_subject).await;
+
             if let Some((_, conn)) = state.ws.connections.remove(&payload.device_id) {
                 let event = json!({ "type": "DEVICE_REVOKED", "payload": { "device_id": payload.device_id } });
                 let _ = conn.tx.send(WsMessage::Text(event.to_string().into()));
@@ -179,9 +241,12 @@ pub async fn revoke_own_device(
             StatusCode::NOT_FOUND,
             Json(json!({"error": "Device not found"})),
         )),
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )),
+        Err(e) => {
+            tracing::error!("Failed to self-revoke device: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "An internal error occurred"})),
+            ))
+        }
     }
 }

@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { ClipboardCheck, Copy } from "lucide-react";
 
 interface Props {
   children: ReactNode;
@@ -7,6 +8,7 @@ interface Props {
 interface State {
   hasError: boolean;
   error: Error | null;
+  copied: boolean;
 }
 
 /**
@@ -16,11 +18,11 @@ interface State {
 export default class ErrorBoundary extends Component<Props, State> {
   constructor(props: Props) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false, error: null, copied: false };
   }
 
   static getDerivedStateFromError(error: Error): State {
-    return { hasError: true, error };
+    return { hasError: true, error, copied: false };
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
@@ -29,6 +31,13 @@ export default class ErrorBoundary extends Component<Props, State> {
 
   handleReload = () => {
     window.location.reload();
+  };
+
+  handleCopy = () => {
+    const log = `Error: ${this.state.error?.message}\nStack: ${this.state.error?.stack}`;
+    void navigator.clipboard.writeText(log);
+    this.setState({ copied: true });
+    setTimeout(() => this.setState({ copied: false }), 2000);
   };
 
   render() {
@@ -71,7 +80,7 @@ export default class ErrorBoundary extends Component<Props, State> {
           >
             Trustline encountered an unexpected error. Your data is safe — click below to reload.
           </p>
-          {import.meta.env.DEV && this.state.error && (
+          {this.state.error && (
             <pre
               style={{
                 fontSize: "0.7rem",
@@ -79,6 +88,7 @@ export default class ErrorBoundary extends Component<Props, State> {
                 padding: "0.75rem 1rem",
                 borderRadius: 6,
                 maxWidth: 500,
+                maxHeight: 200,
                 overflow: "auto",
                 marginBottom: "1.5rem",
                 textAlign: "left",
@@ -102,6 +112,25 @@ export default class ErrorBoundary extends Component<Props, State> {
             }}
           >
             Reload Trustline
+          </button>
+
+          <button
+            onClick={this.handleCopy}
+            style={{
+              marginTop: "1rem",
+              background: "transparent",
+              border: "none",
+              color: "var(--text-muted, #8b949e)",
+              fontSize: "0.7rem",
+              cursor: "pointer",
+              textDecoration: "underline",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+            }}
+          >
+            {this.state.copied ? <ClipboardCheck size={10} /> : <Copy size={10} />}
+            {this.state.copied ? "Copied to clipboard!" : "Copy crash log for support"}
           </button>
         </div>
       );
