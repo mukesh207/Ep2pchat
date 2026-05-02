@@ -576,7 +576,7 @@ async fn check_and_replenish_otpks(
     session: tauri::State<'_, SessionState>,
 ) -> Result<ReplenishResult, String> {
     let base_url = std::env::var("VITE_API_BASE_URL")
-        .unwrap_or_else(|_| "http://localhost:3000/api/v1".to_string());
+        .unwrap_or_else(|_| "https://api.encryptedchat.in/api/v1".to_string());
 
     // Read session JWT from in-memory Tauri state.
     let token = {

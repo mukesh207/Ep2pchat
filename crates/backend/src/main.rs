@@ -164,6 +164,7 @@ async fn async_main() {
     let mut app = Router::new()
         .route("/", get(root))
         .route("/health", get(health))
+        .route("/api/v1/health", get(health))
         .route("/api/v1/health/db", get(health_db))
         .route("/api/v1/health/nats", get(health_nats))
         .route("/ws", get(ws::ws_handler))

@@ -35,7 +35,9 @@ export function canAttemptAdminBootstrap(): boolean {
 
 export async function checkServerHealth(): Promise<boolean> {
     try {
-        const res = await fetch(`${API_BASE_URL}/health`);
+        // The health endpoint is at the root /health, not /api/v1/health
+        const url = API_BASE_URL.replace("/api/v1", "/health");
+        const res = await fetch(url);
         return res.ok;
     } catch {
         return false;
