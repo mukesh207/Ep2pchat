@@ -11,7 +11,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sqlx::Row;
+use sqlx::{Row, QueryBuilder};
 use uuid::Uuid;
 
 pub fn router() -> Router<AppState> {
@@ -49,7 +49,7 @@ pub async fn update_user_department(
     Path(user_id): Path<Uuid>,
     Json(payload): Json<UpdateDepartmentPayload>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if !auth.claims.is_admin {
+    if auth.claims.role != "ADMIN" {
         return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
     }
 
@@ -80,7 +80,7 @@ pub async fn get_settings(
     State(state): State<AppState>,
     auth: AuthContext,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if !auth.claims.is_admin {
+    if auth.claims.role != "ADMIN" {
         return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
     }
 
@@ -110,7 +110,7 @@ pub async fn update_settings(
     auth: AuthContext,
     Json(payload): Json<UpdateSettingsPayload>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if !auth.claims.is_admin {
+    if auth.claims.role != "ADMIN" {
         return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
     }
 
@@ -165,7 +165,7 @@ pub async fn approve_bulk(
     auth: AuthContext,
     Json(payload): Json<BulkActionPayload>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if !auth.claims.is_admin {
+    if auth.claims.role != "ADMIN" {
         return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
     }
 
@@ -181,7 +181,7 @@ pub async fn deny_bulk(
     auth: AuthContext,
     Json(payload): Json<BulkActionPayload>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if !auth.claims.is_admin {
+    if auth.claims.role != "ADMIN" {
         return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
     }
 
@@ -203,7 +203,7 @@ pub async fn update_device_alias(
     Path(device_id): Path<Uuid>,
     Json(payload): Json<UpdateAliasPayload>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if !auth.claims.is_admin {
+    if auth.claims.role != "ADMIN" {
         return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
     }
 
@@ -227,7 +227,7 @@ pub async fn nuke_device(
     auth: AuthContext,
     Path(device_id): Path<Uuid>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if !auth.claims.is_admin {
+    if auth.claims.role != "ADMIN" {
         return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
     }
 
@@ -255,7 +255,7 @@ async fn deny_user_internal(
     auth: AuthContext,
     user_id: Uuid,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if !auth.claims.is_admin {
+    if auth.claims.role != "ADMIN" {
         return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
     }
 
@@ -300,7 +300,7 @@ pub async fn get_pending_users(
     State(state): State<AppState>,
     auth: AuthContext,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if !auth.claims.is_admin {
+    if auth.claims.role != "ADMIN" {
         return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
     }
 
@@ -375,7 +375,7 @@ async fn approve_user_internal(
     auth: AuthContext,
     user_id: Uuid,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if !auth.claims.is_admin {
+    if auth.claims.role != "ADMIN" {
         return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
     }
 
@@ -432,7 +432,7 @@ pub async fn deny_user(
     auth: AuthContext,
     Path(user_id): Path<Uuid>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if !auth.claims.is_admin {
+    if auth.claims.role != "ADMIN" {
         return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
     }
 
@@ -490,7 +490,7 @@ pub async fn get_all_users(
     State(state): State<AppState>,
     auth: AuthContext,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if !auth.claims.is_admin {
+    if auth.claims.role != "ADMIN" {
         return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
     }
 
@@ -543,7 +543,7 @@ pub async fn get_user_devices(
     auth: AuthContext,
     Path(user_id): Path<Uuid>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if !auth.claims.is_admin {
+    if auth.claims.role != "ADMIN" {
         return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
     }
 
@@ -618,7 +618,7 @@ async fn revoke_device_internal(
     auth: AuthContext,
     device_id: Uuid,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if !auth.claims.is_admin {
+    if auth.claims.role != "ADMIN" {
         return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
     }
 
@@ -640,6 +640,11 @@ async fn revoke_device_internal(
                 let user_id: Uuid = row.get("user_id");
 
                 let _ = sqlx::query("DELETE FROM one_time_pre_keys WHERE device_id = $1")
+                    .bind(device_id)
+                    .execute(&mut *tx)
+                    .await?;
+
+                let _ = sqlx::query("DELETE FROM sessions WHERE device_id = $1")
                     .bind(device_id)
                     .execute(&mut *tx)
                     .await?;
@@ -694,6 +699,10 @@ async fn revoke_device_internal(
 pub struct AuditQuery {
     pub page: Option<i64>,
     pub page_size: Option<i64>,
+    pub action: Option<String>,
+    pub email: Option<String>,
+    pub start_date: Option<chrono::DateTime<chrono::Utc>>,
+    pub end_date: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 pub async fn get_audit_logs(
@@ -701,7 +710,7 @@ pub async fn get_audit_logs(
     auth: AuthContext,
     Query(query): Query<AuditQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if !auth.claims.is_admin {
+    if auth.claims.role != "ADMIN" {
         return Err((StatusCode::FORBIDDEN, Json(json!({"error": "Forbidden"}))));
     }
 
@@ -710,26 +719,89 @@ pub async fn get_audit_logs(
     let offset = (page - 1) * page_size;
 
     // RLS: org_id scoped
-    let records = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
+    let result = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
         Box::pin(async move {
-            sqlx::query(
-                "SELECT a.id, a.action, a.details, a.created_at, u.email as actor_email
-                 FROM audit_logs a LEFT JOIN users u ON a.actor_id = u.id
-                 WHERE a.org_id = $1
-                 ORDER BY a.created_at DESC
-                 LIMIT $2 OFFSET $3",
-            )
-            .bind(auth.claims.org_id)
-            .bind(page_size)
-            .bind(offset)
-            .fetch_all(&mut *tx)
-            .await
+            // 1. Build the filtered query
+            let mut builder: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
+                "SELECT a.id, a.action, a.details, a.created_at, u.email as actor_email "
+            );
+            builder.push("FROM audit_logs a LEFT JOIN users u ON a.actor_id = u.id ");
+            builder.push("WHERE a.org_id = ");
+            builder.push_bind(auth.claims.org_id);
+
+            if let Some(action) = &query.action {
+                if !action.is_empty() {
+                    builder.push(" AND a.action = ");
+                    builder.push_bind(action);
+                }
+            }
+
+            if let Some(email) = &query.email {
+                if !email.is_empty() {
+                    builder.push(" AND u.email ILIKE ");
+                    builder.push_bind(format!("%{}%", email));
+                }
+            }
+
+            if let Some(start) = query.start_date {
+                builder.push(" AND a.created_at >= ");
+                builder.push_bind(start);
+            }
+
+            if let Some(end) = query.end_date {
+                builder.push(" AND a.created_at <= ");
+                builder.push_bind(end);
+            }
+
+            builder.push(" ORDER BY a.created_at DESC ");
+            builder.push(" LIMIT ");
+            builder.push_bind(page_size);
+            builder.push(" OFFSET ");
+            builder.push_bind(offset);
+
+            let rows = builder.build().fetch_all(&mut *tx).await?;
+
+            // 2. Build the count query with same filters
+            let mut count_builder: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
+                "SELECT COUNT(*) FROM audit_logs a LEFT JOIN users u ON a.actor_id = u.id "
+            );
+            count_builder.push("WHERE a.org_id = ");
+            count_builder.push_bind(auth.claims.org_id);
+
+            if let Some(action) = &query.action {
+                if !action.is_empty() {
+                    count_builder.push(" AND a.action = ");
+                    count_builder.push_bind(action);
+                }
+            }
+
+            if let Some(email) = &query.email {
+                if !email.is_empty() {
+                    count_builder.push(" AND u.email ILIKE ");
+                    count_builder.push_bind(format!("%{}%", email));
+                }
+            }
+
+            if let Some(start) = query.start_date {
+                count_builder.push(" AND a.created_at >= ");
+                count_builder.push_bind(start);
+            }
+
+            if let Some(end) = query.end_date {
+                count_builder.push(" AND a.created_at <= ");
+                count_builder.push_bind(end);
+            }
+
+            let count_row = count_builder.build().fetch_one(&mut *tx).await?;
+            let total: i64 = count_row.get(0);
+
+            Ok((rows, total))
         })
     })
     .await;
 
-    match records {
-        Ok(rows) => {
+    match result {
+        Ok((rows, total)) => {
             let logs: Vec<Value> = rows
                 .iter()
                 .map(|r| {
@@ -744,6 +816,7 @@ pub async fn get_audit_logs(
                 .collect();
             Ok(Json(json!({
                 "logs": logs,
+                "total": total,
                 "page": page,
                 "page_size": page_size,
             })))

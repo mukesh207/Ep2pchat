@@ -68,6 +68,13 @@ export async function adminBootstrap(email: string) {
     });
 }
 
+export async function logout() {
+    return requestJson('/auth/logout', {
+        method: 'POST',
+        headers: authHeaders(),
+    });
+}
+
 export async function registerPasskey(userId: string) {
     const beginData = await requestJson('/auth/register-passkey/begin', {
         method: 'POST',
@@ -155,8 +162,21 @@ export async function revokeAdminDevice(deviceId: string) {
     });
 }
 
-export async function getAuditLogs(page: number = 1, pageSize: number = 50) {
-    return requestJson(`/admin/audit?page=${page}&page_size=${pageSize}`, { headers: authHeaders() });
+export interface AuditFilters {
+    action?: string;
+    email?: string;
+    start_date?: string;
+    end_date?: string;
+}
+
+export async function getAuditLogs(page: number = 1, pageSize: number = 50, filters: AuditFilters = {}) {
+    let url = `/admin/audit?page=${page}&page_size=${pageSize}`;
+    if (filters.action) url += `&action=${encodeURIComponent(filters.action)}`;
+    if (filters.email) url += `&email=${encodeURIComponent(filters.email)}`;
+    if (filters.start_date) url += `&start_date=${encodeURIComponent(filters.start_date)}`;
+    if (filters.end_date) url += `&end_date=${encodeURIComponent(filters.end_date)}`;
+    
+    return requestJson(url, { headers: authHeaders() });
 }
 
 export async function approveBulk(userIds: string[]) {
@@ -267,6 +287,26 @@ export async function uploadKeys(payload: KeyUploadPayload) {
 
 export async function getUserKeys(userId: string) {
     return requestJson(`/keys/${userId}`, { headers: authHeaders() });
+}
+
+export async function updateProfile(payload: Partial<{ username: string, department: string, presence_status: string }>) {
+    return requestJson('/users/profile', {
+        method: 'PATCH',
+        headers: authHeaders(),
+        body: JSON.stringify(payload)
+    });
+}
+
+export async function uploadStory(ciphertextB64: string, nonceB64: string) {
+    return requestJson('/stories', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ ciphertext_b64: ciphertextB64, nonce_b64: nonceB64 })
+    });
+}
+
+export async function fetchStories() {
+    return requestJson('/stories', { headers: authHeaders() });
 }
 
 export async function logSecurityEvent(action: string, details: any) {

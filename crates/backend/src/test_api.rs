@@ -180,28 +180,28 @@ pub async fn bootstrap(
         org_id,
         device_id: admin_device_id,
         email: "admin@trustline.test".to_string(),
-        token: issue_token(admin_user_id, org_id, true, &state)?,
+        token: issue_token(admin_user_id, org_id, "ADMIN".to_string(), &state).await?,
     };
     let alice = AccountFixture {
         user_id: alice_user_id,
         org_id,
         device_id: alice_device_id,
         email: "alice@trustline.test".to_string(),
-        token: issue_token(alice_user_id, org_id, false, &state)?,
+        token: issue_token(alice_user_id, org_id, "USER".to_string(), &state).await?,
     };
     let bob = AccountFixture {
         user_id: bob_user_id,
         org_id,
         device_id: bob_device_id,
         email: "bob@trustline.test".to_string(),
-        token: issue_token(bob_user_id, org_id, false, &state)?,
+        token: issue_token(bob_user_id, org_id, "USER".to_string(), &state).await?,
     };
     let outsider = AccountFixture {
         user_id: outsider_user_id,
         org_id: other_org_id,
         device_id: outsider_device_id,
         email: "outsider@other.test".to_string(),
-        token: issue_token(outsider_user_id, other_org_id, false, &state)?,
+        token: issue_token(outsider_user_id, other_org_id, "USER".to_string(), &state).await?,
     };
 
     Ok(Json(json!({
@@ -286,29 +286,40 @@ async fn insert_opk(
     Ok(())
 }
 
-fn issue_token(
+async fn issue_token(
     user_id: Uuid,
     org_id: Uuid,
-    is_admin: bool,
+    role: String,
     state: &AppState,
 ) -> Result<String, (StatusCode, Json<Value>)> {
-    let expiration = chrono::Utc::now()
+    let jti = Uuid::new_v4();
+    let expiration_dt = chrono::Utc::now()
         .checked_add_signed(chrono::Duration::hours(24))
-        .expect("valid timestamp")
-        .timestamp() as usize;
+        .expect("valid timestamp");
+    let expiration = expiration_dt.timestamp() as usize;
+    
     let claims = Claims {
         sub: user_id,
         org_id,
-        is_admin,
+        role,
+        jti,
         exp: expiration,
     };
+
+    // Store session in DB to pass middleware check
+    let _ = sqlx::query("INSERT INTO sessions (jti, user_id, expires_at) VALUES ($1, $2, $3)")
+        .bind(jti)
+        .bind(user_id)
+        .bind(expiration_dt)
+        .execute(&state.db)
+        .await;
 
     encode(
         &Header::default(),
         &claims,
         &EncodingKey::from_secret(state.jwt_secret.as_bytes()),
     )
-    .map_err(|e| internal_error(e))
+    .map_err(internal_error)
 }
 
 fn internal_error<E: std::fmt::Display>(err: E) -> (StatusCode, Json<Value>) {

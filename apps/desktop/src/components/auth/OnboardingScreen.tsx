@@ -169,6 +169,17 @@ function OnboardingScreen({
                 <Shield size={14} /> Continue
               </button>
 
+              {email && savedAccounts.length > 0 && (
+                <button 
+                  type="button" 
+                  className="btn btn-ghost btn-full" 
+                  style={{ marginTop: 8 }}
+                  onClick={() => onEmailChange("")}
+                >
+                  <RefreshCw size={12} /> Use different account
+                </button>
+              )}
+
               <div className="security-badges">
                 {[
                   { icon: <Lock size={10} />,    label: "End-to-end encryption" },
@@ -241,7 +252,7 @@ function OnboardingScreen({
               </div>
 
               <button id="back-btn" className="btn btn-ghost btn-full" onClick={onCancelRequest} style={{ marginTop: 12 }}>
-                Cancel & Start Over
+                Go Back
               </button>
             </div>
           )}
@@ -264,6 +275,10 @@ function OnboardingScreen({
               </div>
               <button id="init-vault-btn" className="btn btn-primary btn-full" onClick={onRegister}>
                 <Lock size={14} /> Finish setup
+              </button>
+
+              <button className="btn btn-ghost btn-full" onClick={onCancelRequest} style={{ marginTop: 12 }}>
+                Go Back
               </button>
               
               <div className="recovery-hint">

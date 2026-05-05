@@ -160,10 +160,30 @@ export default function useChat({
     setTypingByContact((prev: any) => ({ ...prev, [payload.sender_user_id]: Boolean(payload.is_typing) }));
   };
 
+  const handleStoryKeyShare = async (payload: any) => {
+    if (!localKeys.current) return;
+    try {
+      const result = await processIncomingMessage(
+        payload,
+        localKeys.current,
+        payload.sender_user_id
+      );
+      if (!result) return;
+      const { plaintext } = result;
+      const parsed = JSON.parse(plaintext);
+      if (parsed.type === "STORY_KEY") {
+        await vault.saveStoryKey(payload.sender_user_id, parsed.key, parsed.nonce);
+      }
+    } catch (err) {
+      console.error("[stories] Failed to process story key share:", err);
+    }
+  };
+
   return {
     handleIncomingMessage,
     handleMessageConfirm,
     handleMessageStatus,
-    handleTypingEvent
+    handleTypingEvent,
+    handleStoryKeyShare
   };
 }

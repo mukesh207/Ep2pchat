@@ -1,11 +1,72 @@
 import { useState, useRef, useEffect, useMemo, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { Search, Send, Shield, Zap, CheckCircle, Lock, MessageSquare, XCircle, Reply, Edit3, Trash2, Smile, CornerDownRight, MoreVertical } from "lucide-react";
+import { Search, Send, Shield, Zap, CheckCircle, Lock, XCircle, Reply, Edit3, Trash2, Smile, CornerDownRight } from "lucide-react";
 import { socket } from "../../lib/socket";
 import EncryptionSpinner from "../EncryptionSpinner";
 import * as crypto from "../../lib/crypto";
 import * as vault from "../../lib/vault";
 import { useToast } from "../ui/Toast";
 import { ContextMenu } from "../ui/ContextMenu";
+
+const EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🔥", "🚀", "✨", "✅", "❌", "💯", "👋"];
+
+function FormattedText({ text }: { text: string }) {
+  if (!text) return null;
+
+  // Handle Code Blocks first
+  const blocks = text.split(/(```[\s\S]*?```)/g);
+  
+  return (
+    <>
+      {blocks.map((block, i) => {
+        if (block.startsWith("```") && block.endsWith("```")) {
+          const content = block.slice(3, -3).trim();
+          return (
+            <pre key={i} className="md-code-block" style={{ 
+              background: "var(--bg-void)", 
+              padding: "12px", 
+              borderRadius: "8px", 
+              margin: "8px 0", 
+              fontFamily: "var(--font-mono)", 
+              fontSize: "0.75rem",
+              overflowX: "auto", 
+              display: "block",
+              border: "1px solid var(--border)"
+            }}>
+              <code>{content}</code>
+            </pre>
+          );
+        }
+
+        // Handle inline formatting
+        const lines = block.split("\n");
+        return lines.map((line, li) => (
+          <span key={`${i}-${li}`}>
+            {line.split(/(\*\*.*?\*\*|\*.*?\*|`.*?`)/g).map((part, pi) => {
+              if (part.startsWith("**") && part.endsWith("**")) {
+                return <strong key={pi} style={{ fontWeight: 700 }}>{part.slice(2, -2)}</strong>;
+              }
+              if (part.startsWith("*") && part.endsWith("*")) {
+                return <em key={pi} style={{ fontStyle: "italic" }}>{part.slice(1, -1)}</em>;
+              }
+              if (part.startsWith("`") && part.endsWith("`")) {
+                return <code key={pi} style={{ 
+                  background: "var(--bg-void)", 
+                  padding: "2px 4px", 
+                  borderRadius: "3px", 
+                  fontFamily: "var(--font-mono)", 
+                  fontSize: "0.85em",
+                  border: "1px solid var(--border)"
+                }}>{part.slice(1, -1)}</code>;
+              }
+              return part;
+            })}
+            {li < lines.length - 1 && <br />}
+          </span>
+        ));
+      })}
+    </>
+  );
+}
 
 export default function ChatArena({
   activeContact,
@@ -30,6 +91,7 @@ export default function ChatArena({
   const typingTimeout = useRef<number | null>(null);
   const feedEnd = useRef<HTMLDivElement>(null);
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
 
   const resizeComposer = (element: HTMLTextAreaElement | null) => {
     if (!element) return;
@@ -51,6 +113,25 @@ export default function ChatArena({
       composerInputRef.current?.focus();
     }
   }, [inputText, editingMsg]);
+
+  const insertEmoji = (emoji: string) => {
+    if (!composerInputRef.current) return;
+    const start = composerInputRef.current.selectionStart;
+    const end = composerInputRef.current.selectionEnd;
+    const text = inputText;
+    const before = text.substring(0, start);
+    const after = text.substring(end);
+    setInputText(before + emoji + after);
+    setShowEmojiPicker(false);
+    
+    // Set cursor after emoji (setTimeout to wait for state update)
+    setTimeout(() => {
+      if (composerInputRef.current) {
+        composerInputRef.current.selectionStart = composerInputRef.current.selectionEnd = start + emoji.length;
+        composerInputRef.current.focus();
+      }
+    }, 0);
+  };
 
   const getErrorMessage = (err: unknown, fallback: string) => {
     if (err instanceof Error && err.message) return err.message;
@@ -322,7 +403,7 @@ export default function ChatArena({
                         </div>
                       )}
                       <div className="bubble-content">
-                        {m.text}
+                        <FormattedText text={m.text} />
                         {m.is_edited && <span className="edited-tag">(edited)</span>}
                       </div>
                       {m.reactions?.length > 0 && (
@@ -379,7 +460,35 @@ export default function ChatArena({
                 <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "var(--font-mono)", fontSize: "var(--fs-chat-meta)", color: "var(--accent-primary)", flexShrink: 0 }}>
                   <Lock size={11} />E2EE
                 </div>
-                <div className="composer-input-wrap">
+                <div className="composer-input-wrap" style={{ position: 'relative' }}>
+                  {showEmojiPicker && (
+                    <div className="emoji-picker-popover" style={{ 
+                      position: 'absolute', 
+                      bottom: '100%', 
+                      left: 0, 
+                      marginBottom: 8, 
+                      background: 'var(--bg-void)', 
+                      border: '1px solid var(--border)', 
+                      borderRadius: '8px', 
+                      padding: '8px', 
+                      display: 'grid', 
+                      gridTemplateColumns: 'repeat(6, 1fr)', 
+                      gap: 4, 
+                      zIndex: 100,
+                      boxShadow: '0 10px 25px rgba(0,0,0,0.5)'
+                    }}>
+                      {EMOJIS.map(e => (
+                        <button 
+                          key={e} 
+                          className="btn btn-ghost btn-sm" 
+                          style={{ fontSize: '1.2rem', padding: '4px' }}
+                          onClick={() => insertEmoji(e)}
+                        >
+                          {e}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <textarea
                     ref={composerInputRef}
                     id="message-input"
@@ -404,6 +513,16 @@ export default function ChatArena({
                   />
                   <span className="composer-key-hint">Enter Send · Shift+Enter New Line</span>
                 </div>
+
+                <button 
+                  className={`btn btn-ghost btn-sm ${showEmojiPicker ? 'active' : ''}`}
+                  onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+                  title="Emoji picker"
+                  style={{ color: showEmojiPicker ? 'var(--accent-primary)' : 'inherit' }}
+                >
+                  <Smile size={16} />
+                </button>
+
                 <button
                   id="send-btn"
                   className="btn btn-primary"

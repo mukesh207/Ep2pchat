@@ -23,11 +23,13 @@ import {
   Loader2,
   FileUp,
   Building2,
+  Plus,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import * as api from "./api";
 import { destroySocket, socket, type WsMessage } from "./lib/socket";
 import AuthFlow from "./components/auth/AuthFlow";
+import OnboardingWizard from "./components/auth/OnboardingWizard";
 import ChatArena from "./components/chat/ChatArena";
 import useChat from "./components/chat/useChat";
 import * as vault from "./lib/vault";
@@ -85,7 +87,16 @@ function AppInternal() {
   const [session, setSession] = useState<SessionState | null>(null);
   const [workspaceError, setWorkspaceError] = useState("");
 
+  const [editUsername, setEditUsername] = useState("");
+  const [editDepartment, setEditDepartment] = useState("");
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+
   const [contacts, setContacts] = useState<Contact[]>([]);
+  const [allStories, setAllStories] = useState<any[]>([]);
+  const [activeStoryUser, setActiveStoryUser] = useState<Contact | null>(null);
+  const [isPostingStory, setIsPostingStory] = useState(false);
+  const [showStoryCreator, setShowStoryCreator] = useState(false);
+  const [storyText, setStoryStoryText] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [activeContact, setActiveContact] = useState<Contact | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -255,8 +266,10 @@ function AppInternal() {
         void handleLogout();
         setWorkspaceError("This device has been remotely wiped by an administrator.");
       }
-    });
-
+      if (msg.type === "STORY_KEY_SHARE") {
+        handlersRef.current.handleStoryKeyShare(msg.payload);
+      }
+      });
     const params = new URLSearchParams(window.location.search);
     const token = params.get("e2e_token");
     if (token) api.setToken(token);
@@ -266,7 +279,7 @@ function AppInternal() {
       const e2eOrgId = params.get("e2e_org_id");
       const e2eDeviceId = params.get("e2e_device_id");
       if (e2eUserId && e2eOrgId && e2eDeviceId && token) {
-        setTimeout(() => handleAuthenticated(e2eUserId, e2eOrgId, e2eDeviceId, {} as LocalKeys, true), 100);
+        setTimeout(() => handleAuthenticated(e2eUserId, e2eOrgId, "e2e@trustline.test", e2eDeviceId, {} as LocalKeys, "ADMIN"), 100);
       }
     }
   }, []);
@@ -274,8 +287,26 @@ function AppInternal() {
   useEffect(() => {
     if (showUserSettings) {
       void refreshMyDevices();
+      setEditUsername(session?.username || "");
+      setEditDepartment(session?.department || "");
     }
-  }, [showUserSettings]);
+  }, [showUserSettings, session]);
+
+  const refreshStories = async () => {
+    if (rootView !== "CHAT" || !session) return;
+    try {
+      const res = await api.fetchStories();
+      setAllStories(res.stories || []);
+    } catch {}
+  };
+
+  useEffect(() => {
+    if (rootView === "CHAT") {
+      void refreshStories();
+      const interval = setInterval(refreshStories, 60000);
+      return () => clearInterval(interval);
+    }
+  }, [rootView, session]);
 
   const loadWorkspace = async (userId: string) => {
     const [usersRes, myDevicesRes, settingsRes] = await Promise.all([
@@ -313,11 +344,13 @@ function AppInternal() {
     email: string,
     deviceId: string,
     keys: LocalKeys,
-    isAdmin: boolean,
+    role: string,
+    username?: string,
+    department?: string,
   ) => {
     void (async () => {
       setWorkspaceError("");
-      setSession({ userId, orgId, email, isAdmin });
+      setSession({ userId, orgId, email, role, username, department });
       localKeys.current = keys;
       myDeviceId.current = deviceId;
       socket.connect(api.getToken(), deviceId);
@@ -329,7 +362,8 @@ function AppInternal() {
         setWorkspaceError(message);
       }
 
-      setRootView("CHAT");
+      // If user has no username set yet, it's their first time — show onboarding.
+      setRootView(username ? "CHAT" : "ONBOARDING");
     })();
   };
 
@@ -396,8 +430,88 @@ function AppInternal() {
     handleDeviceRevoked({ device_id: myDeviceId.current ?? undefined });
   };
 
+  const handleSaveProfile = async () => {
+    setIsSavingProfile(true);
+    try {
+      await api.updateProfile({
+        username: editUsername,
+        department: editDepartment,
+      });
+      setSession((prev) => prev ? { ...prev, username: editUsername, department: editDepartment } : null);
+      addToast("Profile updated successfully", "success");
+    } catch (err: any) {
+      addToast("Failed to update profile: " + err.message, "error");
+    } finally {
+      setIsSavingProfile(false);
+    }
+  };
+
+  const handlePresenceChange = async (status: "online" | "away" | "offline") => {
+    try {
+      await api.updateProfile({ presence_status: status });
+      // Update local presence for self
+      if (session?.userId) {
+        setPresenceByContact((prev) => ({ ...prev, [session.userId]: status }));
+      }
+      addToast(`Status updated to ${status}`, "success");
+    } catch (err: any) {
+      addToast("Failed to update presence: " + err.message, "error");
+    }
+  };
+
+  const handlePostStory = async (text: string) => {
+    if (!text.trim() || !session) return;
+    setIsPostingStory(true);
+    try {
+        const storyKey = window.crypto.getRandomValues(new Uint8Array(32));
+        const storyKeyB64 = btoa(String.fromCharCode(...storyKey));
+        
+        // 1. Encrypt story content locally
+        const [ciphertextB64, nonceB64] = await invoke<[string, string]>("story_encrypt", {
+            plaintext: text,
+            keyB64: storyKeyB64
+        });
+        
+        // 2. Upload to server
+        await api.uploadStory(ciphertextB64, nonceB64);
+
+        // 3. Share key with ALL active contacts via silent system messages
+        const sharePromises = contacts.map(async (contact) => {
+           const target = contact.devices?.[0];
+           if (!target) return;
+           
+           const sessionJson = await vault.getRatchetSession(contact.id);
+           if (!sessionJson) return; // No active session, skipping
+
+           const { header, ciphertext } = await invoke<any>("ratchet_encrypt", {
+               sessionJson,
+               plaintext: JSON.stringify({ type: "STORY_KEY", key: storyKeyB64, nonce: nonceB64 }),
+               associatedData: contact.id
+           });
+           
+           socket.send("STORY_KEY_SHARE", {
+               recipient_device_id: target.device_id,
+               ciphertext,
+               header
+           });
+        });
+
+        await Promise.all(sharePromises);
+        
+        addToast("Story posted successfully!", "success");
+        setShowStoryCreator(false);
+        setStoryStoryText("");
+        void refreshStories();
+    } catch (err: any) {
+        addToast("Failed to post story: " + err.message, "error");
+    } finally {
+        setIsPostingStory(false);
+    }
+  };
+
   const handleLogout = async () => {
     destroySocket();
+    await api.logout().catch(() => {});
     await invoke("clear_vault_session").catch(() => {});
     api.setToken("");
     localKeys.current = null;
@@ -457,7 +571,7 @@ function AppInternal() {
 
     const departments: Record<string, Contact[]> = {};
     unpinned.forEach(c => {
-      const dept = (c as any).department || "Other";
+      const dept = c.department || "General";
       if (!departments[dept]) departments[dept] = [];
       departments[dept].push(c);
     });
@@ -555,11 +669,23 @@ function AppInternal() {
   if (rootView === "ADMIN") {
     return (
           <AdminView
-            isAdmin={Boolean(session?.isAdmin)}
+            role={session?.role || "USER"}
             currentDeviceId={myDeviceId.current}
             onRevocation={handleRevocation}
             onBack={() => setRootView(session ? "CHAT" : "AUTH")}
           />
+    );
+  }
+
+  if (rootView === "ONBOARDING" && session) {
+    return (
+      <OnboardingWizard
+        email={session.email}
+        onComplete={(username, department) => {
+          setSession(prev => prev ? { ...prev, username, department } : null);
+          setRootView("CHAT");
+        }}
+      />
     );
   }
 
@@ -591,7 +717,7 @@ function AppInternal() {
               <div className="meta-item active-status">
                 <span className="status-dot active" /> Protected
               </div>
-              {session?.isAdmin ? (
+              {session?.role === "ADMIN" ? (
                 <button id="admin-btn" className="btn btn-admin" onClick={() => setRootView("ADMIN")}>
                   <Shield size={13} /> Admin Console
                 </button>
@@ -623,6 +749,27 @@ function AppInternal() {
                 </div>
               )}
 
+              <div className="sidebar-stories-ring" style={{ padding: '12px 16px', display: 'flex', gap: 12, overflowX: 'auto', borderBottom: '1px solid var(--border)', scrollbarWidth: 'none' }}>
+                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, cursor: 'pointer', flexShrink: 0 }} onClick={() => setShowStoryCreator(true)}>
+                      <div className="avatar" style={{ border: '2px dashed var(--border)', background: 'transparent' }}>
+                         <Plus size={14} />
+                      </div>
+                      <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)' }}>Your Story</span>
+                   </div>
+                   {Array.from(new Set(allStories.map(s => s.user_id))).map(uid => {
+                      const contact = contacts.find(c => c.id === uid);
+                      if (!contact) return null;
+                      return (
+                        <div key={uid} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, cursor: 'pointer', flexShrink: 0 }} onClick={() => setActiveStoryUser(contact)}>
+                          <div className="avatar" style={{ border: '2px solid var(--accent-primary)', padding: 2, background: 'var(--bg-app)' }}>
+                             <div className="avatar" style={{ margin: 0, width: '100%', height: '100%' }}>{getInitials(getDisplayName(contact))}</div>
+                          </div>
+                          <span style={{ fontSize: '0.6rem' }}>{getDisplayName(contact).split(' ')[0]}</span>
+                        </div>
+                      );
+                   })}
+              </div>
+
               <div className="sidebar-search">
                 <div className="search-wrap">
                   <Search className="search-icon" size={14} />
@@ -644,7 +791,7 @@ function AppInternal() {
                    </div>
                 )}
 
-                {groupedContacts.departments.map(([dept, people]: any) => (
+                {groupedContacts.departments.map(([dept, people]) => (
                   <div key={dept} className="sidebar-group">
                     <div className="sidebar-group-header">
                         <Building2 size={10} />
@@ -658,10 +805,24 @@ function AppInternal() {
 
               <div className="sidebar-footer">
                 <div className="user-profile-summary">
-                  <div className="avatar">{getInitials(session?.email || "U")}</div>
+                  <div className="avatar" style={{ position: 'relative' }}>
+                    {getInitials(session?.email || "U")}
+                    {session?.userId && presenceByContact[session.userId] && (
+                       <div style={{ 
+                         position: "absolute", 
+                         bottom: 0, 
+                         right: 0, 
+                         width: 8, 
+                         height: 8, 
+                         borderRadius: "50%", 
+                         backgroundColor: presenceByContact[session.userId] === 'online' ? 'var(--success)' : presenceByContact[session.userId] === 'away' ? 'var(--warning)' : 'var(--text-muted)',
+                         border: '2px solid var(--bg-app)'
+                       }} />
+                    )}
+                  </div>
                   <div className="user-info">
-                    <div className="user-email">{session?.email}</div>
-                    <div className="user-status-text">Verified Device</div>
+                    <div className="user-email">{session?.username || session?.email}</div>
+                    <div className="user-status-text">{session?.department || "Verified Device"}</div>
                   </div>
                 </div>
                 <button className="btn btn-ghost btn-sm btn-icon" onClick={() => setShowUserSettings(true)}>
@@ -712,6 +873,67 @@ function AppInternal() {
                   </button>
                 </div>
                 <div className="modal-body" style={{ padding: "20px 0" }}>
+
+                  <div style={{ marginBottom: 32, borderBottom: '1px solid var(--border)', paddingBottom: 24 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+                      <Building2 size={14} color="var(--accent-primary)" />
+                      <h4 style={{ fontSize: "0.9rem", fontWeight: 600 }}>Profile & Identity</h4>
+                    </div>
+                    
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                      <div className="form-group">
+                        <label className="label" style={{ fontSize: '0.7rem', marginBottom: 4, display: 'block' }}>Display Username</label>
+                        <input 
+                          className="input" 
+                          value={editUsername} 
+                          onChange={e => setEditUsername(e.target.value)}
+                          placeholder="e.g. Satoshi"
+                        />
+                      </div>
+                      
+                      <div className="form-group">
+                        <label className="label" style={{ fontSize: '0.7rem', marginBottom: 4, display: 'block' }}>Department / Team</label>
+                        <input 
+                          className="input" 
+                          value={editDepartment} 
+                          onChange={e => setEditDepartment(e.target.value)}
+                          placeholder="e.g. Engineering"
+                        />
+                      </div>
+
+                      <div className="form-group">
+                        <label className="label" style={{ fontSize: '0.7rem', marginBottom: 8, display: 'block' }}>Current Status</label>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          {(['online', 'away', 'offline'] as const).map(status => (
+                            <button
+                              key={status}
+                              className={`btn btn-sm ${presenceByContact[session?.userId || ""] === status ? 'btn-primary' : 'btn-ghost'}`}
+                              style={{ flex: 1, textTransform: 'capitalize', fontSize: '0.65rem' }}
+                              onClick={() => void handlePresenceChange(status)}
+                            >
+                              <div style={{ 
+                                width: 6, 
+                                height: 6, 
+                                borderRadius: '50%', 
+                                background: status === 'online' ? 'var(--success)' : status === 'away' ? 'var(--warning)' : 'var(--text-muted)',
+                                marginRight: 6
+                              }} />
+                              {status}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <button 
+                        className="btn btn-primary btn-sm" 
+                        style={{ marginTop: 8, justifyContent: 'center' }}
+                        onClick={handleSaveProfile}
+                        disabled={isSavingProfile}
+                      >
+                        {isSavingProfile ? <Loader2 size={12} className="spin" /> : "Save Profile Details"}
+                      </button>
+                    </div>
+                  </div>
                   
                   <div style={{ marginBottom: 32 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
@@ -833,6 +1055,99 @@ function AppInternal() {
               onClose={() => setShowIdentityModal(false)}
             />
           )}
+
+          {showStoryCreator && (
+            <div className="modal-overlay" style={{ zIndex: 200 }}>
+              <div className="modal-content" style={{ maxWidth: 400, padding: 24, background: 'var(--bg-void)', border: '1px solid var(--accent-primary)' }}>
+                <h3 style={{ marginBottom: 16 }}>Create Status Update</h3>
+                <textarea 
+                  className="input" 
+                  style={{ minHeight: 120, fontSize: '1.2rem', textAlign: 'center', background: 'var(--surface-1)' }}
+                  placeholder="What's on your mind?"
+                  value={storyText}
+                  onChange={e => setStoryStoryText(e.target.value)}
+                />
+                <div style={{ marginTop: 24, display: 'flex', gap: 12 }}>
+                   <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => setShowStoryCreator(false)}>Cancel</button>
+                   <button className="btn btn-primary" style={{ flex: 2 }} onClick={() => void handlePostStory(storyText)} disabled={isPostingStory}>
+                      {isPostingStory ? <Loader2 size={14} className="spin" /> : "Post Story"}
+                   </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeStoryUser && (
+            <div className="modal-overlay" style={{ zIndex: 300, background: 'rgba(0,0,0,0.9)' }}>
+               <div style={{ position: 'absolute', top: 20, right: 20 }}>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setActiveStoryUser(null)}><X size={24} /></button>
+               </div>
+               <StoryViewer 
+                  user={activeStoryUser} 
+                  stories={allStories.filter(s => s.user_id === activeStoryUser.id)} 
+                  onClose={() => setActiveStoryUser(null)}
+               />
+            </div>
+          )}
         </div>
   );
 }
+
+function StoryViewer({ user, stories, onClose }: { user: Contact, stories: any[], onClose: () => void }) {
+  const [index, setIndex] = useState(0);
+  const [decryptedText, setDecryptedText] = useState("Decrypting...");
+  const currentStory = stories[index];
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      if (!currentStory) return;
+      const keyInfo = await vault.getStoryKey(user.id);
+      if (!keyInfo) {
+        if (active) setDecryptedText("Locked: No story key received yet.");
+        return;
+      }
+      try {
+        const pt = await invoke<string>("story_decrypt", {
+            ciphertextB64: currentStory.ciphertext_b64,
+            keyB64: keyInfo.key,
+            nonceB64: keyInfo.nonce,
+        });
+        if (active) setDecryptedText(pt);
+      } catch (err) {
+        console.error("Story decryption failed", err);
+        if (active) setDecryptedText("Failed to decrypt story.");
+      }
+    })();
+    return () => { active = false; };
+  }, [currentStory, user.id]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (index < stories.length - 1) setIndex(index + 1);
+      else onClose();
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [index, stories.length, onClose]);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', width: '100%', maxWidth: 500, margin: '0 auto', color: 'white', textAlign: 'center' }}>
+       <div style={{ display: 'flex', gap: 4, width: '100%', position: 'absolute', top: 60, padding: '0 20px' }}>
+          {stories.map((_, i) => (
+            <div key={i} style={{ flex: 1, height: 2, background: i <= index ? 'var(--accent-primary)' : 'rgba(255,255,255,0.2)' }} />
+          ))}
+       </div>
+       <div style={{ marginBottom: 32, display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div className="avatar" style={{ width: 40, height: 40 }}>{getInitials(user.username || user.email)}</div>
+          <div style={{ textAlign: 'left' }}>
+             <div style={{ fontWeight: 600 }}>{user.username || user.email}</div>
+             <div style={{ fontSize: '0.7rem', opacity: 0.7 }}>{new Date(currentStory?.created_at).toLocaleString()}</div>
+          </div>
+       </div>
+       <div style={{ fontSize: '2rem', lineHeight: 1.4, padding: '0 20px' }}>
+          {decryptedText}
+       </div>
+    </div>
+  );
+}
+

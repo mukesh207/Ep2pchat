@@ -112,6 +112,12 @@ pub enum WsEnvelope {
     MessageRead { message_id: Uuid },
     #[serde(rename = "TYPING_EVENT")]
     TypingEvent { recipient_device_id: Uuid, is_typing: bool },
+    #[serde(rename = "STORY_KEY_SHARE")]
+    StoryKeyShare {
+        recipient_device_id: Uuid,
+        ciphertext: String,
+        header: serde_json::Value,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -139,6 +145,11 @@ enum RoutedEvent {
     DeviceRevoked {
         device_id: Uuid,
     },
+    StoryKeyShare {
+        sender_user_id: Uuid,
+        ciphertext: String,
+        header: serde_json::Value,
+    },
 }
 
 // ── WebSocket Upgrade Handler ───────────────────────────────────────────────
@@ -162,6 +173,16 @@ pub async fn ws_handler(
         Ok(data) => data,
         Err(_) => return (StatusCode::UNAUTHORIZED, "Invalid or expired token").into_response(),
     };
+
+    // Session Revocation Check: Ensure JTI exists in database
+    let session_check = sqlx::query("SELECT 1 FROM sessions WHERE jti = $1")
+        .bind(token_data.claims.jti)
+        .fetch_optional(&state.db)
+        .await;
+
+    if let Ok(None) | Err(_) = session_check {
+        return (StatusCode::UNAUTHORIZED, "Session has been revoked or logged out").into_response();
+    }
 
     let Some(device_id) = query.device_id else {
         return (StatusCode::BAD_REQUEST, "device_id is required").into_response();
@@ -333,6 +354,23 @@ async fn handle_socket(socket: WebSocket, state: AppState, device_id: Uuid, clai
         tokio::spawn(async {})
     };
 
+    // ── Presence Subscriber ─────────────────────────────────────────────
+    let presence_subject = format!("presence.org.{}", org_id);
+    let presence_tx = tx.clone();
+    let presence_task = if let Some(mut presence_sub) = state.nats.subscribe(presence_subject).await {
+        tokio::spawn(async move {
+            while let Some(msg) = presence_sub.next().await {
+                if let Ok(payload_str) = std::str::from_utf8(&msg.payload) {
+                    if presence_tx.send(Message::Text(payload_str.to_string().into())).is_err() {
+                        break;
+                    }
+                }
+            }
+        })
+    } else {
+        tokio::spawn(async {})
+    };
+
     // ── Outbound: channel → WebSocket ───────────────────────────────────
     let mut send_task = tokio::spawn(async move {
         while let Some(message) = rx.recv().await {
@@ -345,7 +383,6 @@ async fn handle_socket(socket: WebSocket, state: AppState, device_id: Uuid, clai
     // ── Inbound: WebSocket → handler ────────────────────────────────────
     let mut recv_task = {
         let state = state.clone();
-        let device_id = device_id;
         tokio::spawn(async move {
             let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(30));
 
@@ -393,10 +430,12 @@ async fn handle_socket(socket: WebSocket, state: AppState, device_id: Uuid, clai
         _ = (&mut send_task) => {
             recv_task.abort();
             nats_task.abort();
+            presence_task.abort();
         },
         _ = (&mut recv_task) => {
             send_task.abort();
             nats_task.abort();
+            presence_task.abort();
         },
     };
 
@@ -454,6 +493,14 @@ fn deliver_event_to_device(state: &AppState, device_id: Uuid, event: RoutedEvent
         RoutedEvent::DeviceRevoked { device_id } => json!({
             "type": "DEVICE_REVOKED",
             "payload": { "device_id": device_id }
+        }),
+        RoutedEvent::StoryKeyShare { sender_user_id, ciphertext, header } => json!({
+            "type": "STORY_KEY_SHARE",
+            "payload": {
+                "sender_user_id": sender_user_id,
+                "ciphertext": ciphertext,
+                "header": header
+            }
         }),
     };
 
@@ -917,6 +964,32 @@ pub(crate) async fn handle_envelope(
                 state,
                 recipient_device_id,
                 RoutedEvent::Typing { sender_user_id, is_typing },
+            );
+        }
+
+        WsEnvelope::StoryKeyShare { recipient_device_id, ciphertext, header } => {
+            let (sender_user_id, org_id) = match sender_context(state, sender_device_id) {
+                Ok(ctx) => ctx,
+                Err(err) => {
+                    send_ws_error(state, sender_device_id, err);
+                    return;
+                }
+            };
+
+            // Verify target device belongs to same org
+            if let Err(err) = verify_device_in_org(&state.db, recipient_device_id, org_id).await {
+                send_ws_error(state, sender_device_id, err);
+                return;
+            }
+
+            deliver_event_to_device(
+                state,
+                recipient_device_id,
+                RoutedEvent::StoryKeyShare {
+                    sender_user_id,
+                    ciphertext,
+                    header,
+                },
             );
         }
     }

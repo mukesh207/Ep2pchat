@@ -4,7 +4,7 @@ use axum::extract::ws::Message as WsMessage;
 use axum::{
     extract::State,
     http::StatusCode,
-    routing::{get, post},
+    routing::{get, post, patch},
     Json, Router,
 };
 use serde::Deserialize;
@@ -20,6 +20,68 @@ pub fn router() -> Router<AppState> {
         .route("/devices", get(get_my_devices))
         .route("/revoke-device", post(revoke_own_device))
         .route("/audit/log-event", post(log_security_event))
+        .route("/profile", patch(update_profile))
+}
+
+#[derive(Deserialize)]
+pub struct UpdateProfilePayload {
+    pub username: Option<String>,
+    pub department: Option<String>,
+    pub presence_status: Option<String>,
+}
+
+pub async fn update_profile(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Json(payload): Json<UpdateProfilePayload>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let presence_status = payload.presence_status.clone();
+
+    let res = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
+        Box::pin(async move {
+            sqlx::query(
+                "UPDATE users 
+                 SET username = COALESCE($1, username),
+                     department = COALESCE($2, department),
+                     presence_status = COALESCE($3, presence_status)
+                 WHERE id = $4 AND org_id = $5"
+            )
+            .bind(payload.username)
+            .bind(payload.department)
+            .bind(payload.presence_status)
+            .bind(auth.claims.sub)
+            .bind(auth.claims.org_id)
+            .execute(&mut *tx)
+            .await
+        })
+    })
+    .await;
+
+    match res {
+        Ok(_) => {
+            // Broadcast presence update if changed
+            if let Some(status) = presence_status {
+                let subject = format!("presence.org.{}", auth.claims.org_id);
+                let presence_msg = json!({
+                    "type": "PRESENCE_UPDATE",
+                    "payload": {
+                        "user_id": auth.claims.sub,
+                        "status": status
+                    }
+                });
+                state.nats.publish(subject, presence_msg.to_string().into()).await;
+            }
+
+            Ok(Json(json!({ "status": "success" })))
+        },
+        Err(e) => {
+            tracing::error!("Failed to update profile: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "An internal error occurred"})),
+            ))
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -204,6 +266,11 @@ pub async fn revoke_own_device(
 
             if row.is_some() {
                 let _ = sqlx::query("DELETE FROM one_time_pre_keys WHERE device_id = $1")
+                    .bind(payload.device_id)
+                    .execute(&mut *tx)
+                    .await?;
+
+                let _ = sqlx::query("DELETE FROM sessions WHERE device_id = $1")
                     .bind(payload.device_id)
                     .execute(&mut *tx)
                     .await?;

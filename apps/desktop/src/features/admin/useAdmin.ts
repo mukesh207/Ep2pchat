@@ -76,10 +76,11 @@ export function useAdmin(options?: {
   );
 
   const fetchAuditLog = useCallback(
-    async (page: number): Promise<{ logs: AuditLogRow[]; page: number; page_size: number }> => {
-      const response = await api.getAuditLogs(page, 25);
+    async (page: number, filters: api.AuditFilters = {}): Promise<{ logs: AuditLogRow[]; total: number; page: number; page_size: number }> => {
+      const response = await api.getAuditLogs(page, 25, filters);
       return {
         logs: (response.logs ?? []) as AuditLogRow[],
+        total: response.total ?? 0,
         page: response.page ?? page,
         page_size: response.page_size ?? 25,
       };

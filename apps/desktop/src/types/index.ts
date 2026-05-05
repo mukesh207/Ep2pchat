@@ -22,6 +22,7 @@ export interface Contact {
   id: string;
   email: string;
   username?: string;
+  department?: string;
   status?: "pending_approval" | "active" | "suspended" | "revoked";
   presence_status?: "online" | "offline" | "away";
   last_seen?: string;
@@ -46,13 +47,15 @@ export interface Message {
   status?: "sending" | "sent" | "delivered" | "read" | "received";
 }
 
-export type RootView = "AUTH" | "CHAT" | "ADMIN";
+export type RootView = "AUTH" | "ONBOARDING" | "CHAT" | "ADMIN";
 
 export interface SessionState {
   userId: string;
   orgId: string;
   email: string;
-  isAdmin: boolean;
+  role: string;
+  username?: string;
+  department?: string;
 }
 
 // ── Crypto & Key Types ─────────────────────────────────────────────────────

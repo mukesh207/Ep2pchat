@@ -59,7 +59,8 @@ pub fn build_access_code(user_id: Uuid) -> String {
 pub struct Claims {
     pub sub: Uuid,
     pub org_id: Uuid,
-    pub is_admin: bool,
+    pub role: String,
+    pub jti: Uuid,
     pub exp: usize,
 }
 
@@ -85,11 +86,40 @@ impl FromRequestParts<AppState> for AuthContext {
                     &validation,
                 );
                 if let Ok(data) = token_data {
-                    return Ok(AuthContext { claims: data.claims });
+                    // Session Revocation Check: Ensure JTI exists in database
+                    let session_exists = sqlx::query("SELECT 1 FROM sessions WHERE jti = $1")
+                        .bind(data.claims.jti)
+                        .fetch_optional(&state.db)
+                        .await;
+
+                    if let Ok(Some(_)) = session_exists {
+                        return Ok(AuthContext { claims: data.claims });
+                    }
                 }
             }
         }
         Err((StatusCode::UNAUTHORIZED, Json(json!({"error": "Unauthorized"}))))
+    }
+}
+
+pub async fn logout(
+    State(state): State<AppState>,
+    auth: AuthContext,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let res = sqlx::query("DELETE FROM sessions WHERE jti = $1")
+        .bind(auth.claims.jti)
+        .execute(&state.db)
+        .await;
+
+    match res {
+        Ok(_) => Ok(Json(json!({ "status": "success" }))),
+        Err(e) => {
+            tracing::error!("Failed to logout session: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "An internal error occurred"})),
+            ))
+        }
     }
 }
 
@@ -101,6 +131,7 @@ pub fn router() -> Router<AppState> {
         .route("/login/begin", post(login_begin))
         .route("/login/complete", post(login_complete))
         .route("/admin-bootstrap", post(admin_bootstrap))
+        .route("/logout", post(logout))
 }
 
 /// One-time admin bootstrap endpoint.
@@ -147,7 +178,7 @@ async fn admin_bootstrap(
 
     // Look up the admin user
     let row =
-        sqlx::query("SELECT u.id, u.org_id, u.is_admin, u.status FROM users u WHERE u.email = $1")
+        sqlx::query("SELECT u.id, u.org_id, u.role, u.status, u.username, u.department FROM users u WHERE u.email = $1")
             .bind(&email)
             .fetch_optional(&state.db)
             .await;
@@ -162,10 +193,12 @@ async fn admin_bootstrap(
 
     let user_id: Uuid = row.get("id");
     let org_id: Uuid = row.get("org_id");
-    let is_admin: bool = row.get("is_admin");
+    let role: String = row.get("role");
     let status: String = row.get("status");
+    let username: Option<String> = row.get("username");
+    let department: Option<String> = row.get("department");
 
-    if status != "active" || !is_admin {
+    if status != "active" || role != "ADMIN" {
         return Json(json!({"error": "User is not an active admin"}));
     }
 
@@ -173,12 +206,32 @@ async fn admin_bootstrap(
         return Json(json!({"error": "Admin bootstrap has already been used"}));
     }
 
-    let expiration = chrono::Utc::now()
+    let jti = Uuid::new_v4();
+    let expiration_dt = chrono::Utc::now()
         .checked_add_signed(chrono::Duration::hours(24))
-        .expect("valid timestamp")
-        .timestamp() as usize;
+        .expect("valid timestamp");
+    let expiration = expiration_dt.timestamp() as usize;
 
-    let claims = Claims { sub: user_id, org_id, is_admin: true, exp: expiration };
+    let claims = Claims {
+        sub: user_id,
+        org_id,
+        role: role.clone(),
+        jti,
+        exp: expiration,
+    };
+
+    // Store session in DB
+    let session_store = sqlx::query("INSERT INTO sessions (jti, user_id, expires_at) VALUES ($1, $2, $3)")
+        .bind(jti)
+        .bind(user_id)
+        .bind(expiration_dt)
+        .execute(&state.db)
+        .await;
+
+    if let Err(e) = session_store {
+        state.admin_bootstrap_consumed.store(false, Ordering::Release);
+        return Json(json!({"error": format!("Failed to create session: {}", e)}));
+    }
 
     let token = match encode(
         &Header::default(),
@@ -198,7 +251,9 @@ async fn admin_bootstrap(
         "token": token,
         "user_id": user_id,
         "org_id": org_id,
-        "is_admin": true
+        "role": role,
+        "username": username,
+        "department": department
     }))
 }
 
@@ -453,7 +508,7 @@ pub async fn login_begin(
     let start_res = crate::db::with_rls_context(&state.db, Uuid::nil(), |tx| {
         Box::pin(async move {
             let user_row =
-                sqlx::query("SELECT id, org_id, is_admin FROM users WHERE email = $1 AND status = 'active'")
+                sqlx::query("SELECT id, org_id, role FROM users WHERE email = $1 AND status = 'active'")
                     .bind(&email)
                     .fetch_optional(&mut *tx)
                     .await?;
@@ -465,7 +520,7 @@ pub async fn login_begin(
 
             let user_id: Uuid = row.get("id");
             let org_id: Uuid = row.get("org_id");
-            let is_admin: bool = row.get::<Option<bool>, _>("is_admin").unwrap_or(false);
+            let role: String = row.get("role");
 
             // Check maintenance mode
             let org_row = sqlx::query("SELECT is_maintenance_mode FROM organizations WHERE id = $1")
@@ -474,7 +529,7 @@ pub async fn login_begin(
                 .await?;
             let is_maintenance: bool = org_row.get::<Option<bool>, _>("is_maintenance_mode").unwrap_or(false);
 
-            if is_maintenance && !is_admin {
+            if is_maintenance && role != "ADMIN" {
                 return Err(sqlx::Error::Decode("MAINTENANCE_MODE".into()));
             }
 
@@ -603,7 +658,7 @@ pub async fn login_complete(
             .execute(&mut *tx)
             .await?;
 
-            let user_record = sqlx::query("SELECT is_admin FROM users WHERE id = $1")
+            let user_record = sqlx::query("SELECT role, username, department FROM users WHERE id = $1")
                 .bind(payload.user_id)
                 .fetch_optional(&mut *tx)
                 .await?;
@@ -618,14 +673,31 @@ pub async fn login_complete(
         _ => return Json(json!({"error": "User not found or DB err"})),
     };
 
-    let is_admin: bool = user_record.get::<Option<bool>, _>("is_admin").unwrap_or(false);
+    let role: String = user_record.get("role");
+    let username: Option<String> = user_record.get("username");
+    let department: Option<String> = user_record.get("department");
 
-    let expiration = chrono::Utc::now()
+    let jti = Uuid::new_v4();
+    let expiration_dt = chrono::Utc::now()
         .checked_add_signed(chrono::Duration::hours(24))
-        .expect("valid timestamp")
-        .timestamp() as usize;
+        .expect("valid timestamp");
+    let expiration = expiration_dt.timestamp() as usize;
 
-    let claims = Claims { sub: payload.user_id, org_id, is_admin, exp: expiration };
+    let claims = Claims {
+        sub: payload.user_id,
+        org_id,
+        role: role.clone(),
+        jti,
+        exp: expiration,
+    };
+
+    // Store session in DB
+    let _ = sqlx::query("INSERT INTO sessions (jti, user_id, expires_at) VALUES ($1, $2, $3)")
+        .bind(jti)
+        .bind(payload.user_id)
+        .bind(expiration_dt)
+        .execute(&state.db)
+        .await;
 
     let token = match encode(
         &Header::default(),
@@ -636,5 +708,5 @@ pub async fn login_complete(
         Err(e) => return Json(json!({"error": format!("Failed to create token: {}", e)})),
     };
 
-    Json(json!({"status": "success", "token": token, "user_id": payload.user_id, "org_id": org_id}))
+    Json(json!({"status": "success", "token": token, "user_id": payload.user_id, "org_id": org_id, "role": role, "username": username, "department": department}))
 }

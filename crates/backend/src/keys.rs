@@ -97,6 +97,13 @@ pub async fn upload_keys(
 
         let device_id: Uuid = device_row.get("id");
 
+        // Link current session to this device
+        sqlx::query("UPDATE sessions SET device_id = $1 WHERE jti = $2")
+            .bind(device_id)
+            .bind(auth.claims.jti)
+            .execute(&mut *tx)
+            .await?;
+
         for opk in payload.one_time_pre_keys {
             let opk_bytes = base64::engine::general_purpose::STANDARD.decode(&opk.public_key)
                 .map_err(|_| sqlx::Error::Decode("Invalid bounds".into()))?;
@@ -221,14 +228,11 @@ pub async fn get_user_keys_internal(
         .await
         .map_err(|e| e.to_string())?;
 
-        let opk = match result {
-            Some(row) => Some(OneTimeKeyPayload {
-                key_id: row.get::<i32, _>("key_id"),
-                public_key: base64::engine::general_purpose::STANDARD
-                    .encode(row.get::<Vec<u8>, _>("public_key")),
-            }),
-            None => None,
-        };
+        let opk = result.map(|row| OneTimeKeyPayload {
+            key_id: row.get::<i32, _>("key_id"),
+            public_key: base64::engine::general_purpose::STANDARD
+                .encode(row.get::<Vec<u8>, _>("public_key")),
+        });
 
         if opk.is_none() {
             // "Return error if zero rows (already consumed)" logic applied partially if required
@@ -372,7 +376,7 @@ pub async fn upload_otpks(
                 let hash = hasher.finalize();
                 // Take first 4 bytes as big-endian i32, masked to positive range.
                 let bytes: [u8; 4] = hash[..4].try_into().unwrap();
-                (i32::from_be_bytes(bytes) & 0x7FFF_FFFF)
+                i32::from_be_bytes(bytes) & 0x7FFF_FFFF
             };
 
             sqlx::query(

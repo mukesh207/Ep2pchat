@@ -7,16 +7,18 @@ import OnboardingScreen from "./OnboardingScreen";
 import { useToast } from "../ui/Toast";
 
 type View = "HOME" | "WAITING" | "REGISTER" | "LOADING";
-
 export default function AuthFlow({
   onAuthenticated,
 }: {
   onAuthenticated: (
     userId: string,
     orgId: string,
+    email: string,
     deviceId: string,
     localKeys: any,
-    isAdmin: boolean,
+    role: string,
+    username?: string,
+    department?: string,
   ) => void;
 }) {
   const { addToast } = useToast();
@@ -106,10 +108,9 @@ export default function AuthFlow({
             const bootstrapRes = await api.adminBootstrap(email);
             if (bootstrapRes.token) {
               setView("LOADING");
-              await completeSetup(bootstrapRes.token, res.user_id, bootstrapRes.org_id, true);
+              await completeSetup(bootstrapRes.token, res.user_id, bootstrapRes.org_id, "ADMIN", bootstrapRes.username, bootstrapRes.department);
               return;
-            }
-          } catch {
+            }          } catch {
             // Not the configured admin or bootstrap is unavailable — continue with passkey login.
           }
         }
@@ -142,7 +143,7 @@ export default function AuthFlow({
       if (!localKeys.current) setView("REGISTER"); else {
         saveAccount(loginEmail);
         const claims = decodeJwtClaims(api.getToken());
-        onAuthenticated(uid, res.org_id, loginEmail, myDeviceId.current!, localKeys.current, Boolean((claims as any)?.is_admin));
+        onAuthenticated(uid, res.org_id, loginEmail, myDeviceId.current!, localKeys.current, (claims as any)?.role || "USER", res.username, res.department);
       }
     } catch (err: any) {
       // "No passkeys found" is expected for first-time users — don't show as error
@@ -154,7 +155,7 @@ export default function AuthFlow({
     }
   };
 
-  const completeSetup = async (token: string, uid: string, orgIdVal: string, adminFlag: boolean) => {
+  const completeSetup = async (token: string, uid: string, orgIdVal: string, roleVal: string, username?: string, department?: string) => {
     api.setToken(token);
     setUserId(uid);
     await invoke("set_session_jwt", { jwt: token }).catch(() => {});
@@ -176,23 +177,28 @@ export default function AuthFlow({
     }
 
     setLoadingStep("Syncing public keys with relay server...");
-    const uploadRes = await api.uploadKeys({
-      user_id: uid,
-      org_id: orgIdVal,
-      device_name: "Desktop App",
-      identity_key: keys.identity_public,
-      signed_pre_key: keys.signed_pre_key_public,
-      signed_pre_key_sig: keys.signed_pre_key_signature,
-      one_time_pre_keys: keys.one_time_pre_keys.map((k: any) => ({ key_id: k.key_id, public_key: k.public_key })),
-    });
-    if (uploadRes.error) throw new Error(uploadRes.error);
+    try {
+      const uploadRes = await api.uploadKeys({
+        user_id: uid,
+        org_id: orgIdVal,
+        device_name: "Desktop App",
+        identity_key: keys.identity_public,
+        signed_pre_key: keys.signed_pre_key_public,
+        signed_pre_key_sig: keys.signed_pre_key_signature,
+        one_time_pre_keys: keys.one_time_pre_keys.map((k: any) => ({ key_id: k.key_id, public_key: k.public_key })),
+      });
+      if (uploadRes.error) throw new Error(uploadRes.error);
 
-    myDeviceId.current = uploadRes.device_id;
-    try { await vault.saveDeviceId(uploadRes.device_id); } catch {}
+      myDeviceId.current = uploadRes.device_id;
+      try { await vault.saveDeviceId(uploadRes.device_id); } catch {}
 
-    saveAccount(email);
-    // Call onAuthenticated directly with fresh values (React setState is async)
-    onAuthenticated(uid, orgIdVal, email, uploadRes.device_id, keys, adminFlag);
+      saveAccount(email);
+      // Call onAuthenticated directly with fresh values (React setState is async)
+      onAuthenticated(uid, orgIdVal, email, uploadRes.device_id, keys, roleVal, username, department);
+    } catch (err: any) {
+      console.error("Complete setup failed at upload step", err);
+      throw new Error(`Sync failed: ${err.message || 'Server rejected keys'}`);
+    }
   };
 
   const handleRegisterPasskey = async () => {
@@ -204,7 +210,7 @@ export default function AuthFlow({
         try {
           const bootstrapRes = await api.adminBootstrap(email);
           if (bootstrapRes.token) {
-            await completeSetup(bootstrapRes.token, userId, bootstrapRes.org_id, true);
+            await completeSetup(bootstrapRes.token, userId, bootstrapRes.org_id, "ADMIN", bootstrapRes.username, bootstrapRes.department);
             return;
           }
         } catch {
@@ -219,10 +225,12 @@ export default function AuthFlow({
       const loginRes = await api.loginPasskey(email);
       if (loginRes.error) throw new Error(loginRes.error);
 
-      await completeSetup(loginRes.token, userId, loginRes.org_id, Boolean((decodeJwtClaims(loginRes.token) as any)?.is_admin));
+      const claims = decodeJwtClaims(loginRes.token);
+      await completeSetup(loginRes.token, userId, loginRes.org_id, (claims as any)?.role || "USER", loginRes.username, loginRes.department);
     } catch (err: any) {
+      console.error("Register/Login flow failed:", err);
       setView("REGISTER");
-      addToast(err.message, "error");
+      addToast(err.message || "Final setup failed. Check your network or hardware key.", "error");
     }
   };
 

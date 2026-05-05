@@ -161,6 +161,12 @@ export async function initVault() {
                 consumed        INTEGER NOT NULL DEFAULT 0,
                 consumed_at     TEXT
             )`,
+            `CREATE TABLE IF NOT EXISTS story_keys (
+                user_id         TEXT    PRIMARY KEY,
+                story_key_b64   TEXT    NOT NULL,
+                nonce_b64       TEXT    NOT NULL,
+                created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+            )`,
             `CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
                 content,
                 content='messages',
@@ -516,6 +522,37 @@ export async function localOtpkCount(): Promise<number> {
         "SELECT COUNT(*) as count FROM otpk_private_keys WHERE consumed = 0"
     );
     return row[0]?.count ?? 0;
+}
+
+// ── Stories Key Management ──────────────────────────────────────────────────
+
+/**
+ * Persist a story decryption key received from a contact via a silent message.
+ */
+export async function saveStoryKey(userId: string, keyB64: string, nonceB64: string): Promise<void> {
+    const vault = await initVault();
+    await vault.execute(
+        `INSERT INTO story_keys (user_id, story_key_b64, nonce_b64, created_at)
+         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(user_id) DO UPDATE SET
+            story_key_b64 = excluded.story_key_b64,
+            nonce_b64 = excluded.nonce_b64,
+            created_at = CURRENT_TIMESTAMP`,
+        [userId, keyB64, nonceB64]
+    );
+}
+
+/**
+ * Retrieve a contact's story decryption key.
+ */
+export async function getStoryKey(userId: string): Promise<{ key: string, nonce: string } | null> {
+    const vault = await initVault();
+    const rows = await vault.select<{ story_key_b64: string, nonce_b64: string }[]>(
+        "SELECT story_key_b64, nonce_b64 FROM story_keys WHERE user_id = ? LIMIT 1",
+        [userId]
+    );
+    if (!rows.length) return null;
+    return { key: rows[0].story_key_b64, nonce: rows[0].nonce_b64 };
 }
 
 /**

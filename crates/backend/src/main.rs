@@ -4,6 +4,7 @@ mod db;
 pub mod error;
 mod keys;
 mod nats;
+mod stories;
 mod test_api;
 #[cfg(test)]
 mod tests;
@@ -106,9 +107,9 @@ async fn async_main() {
                         INSERT INTO organizations (domain, name) VALUES ($1, $1)
                         ON CONFLICT (domain) DO UPDATE SET domain=EXCLUDED.domain RETURNING id
                     )
-                    INSERT INTO users (org_id, email, status, is_admin)
-                    SELECT id, $2, 'active', true FROM new_org
-                    ON CONFLICT (org_id, email) DO UPDATE SET status='active', is_admin=true;"#,
+                    INSERT INTO users (org_id, email, status, role)
+                    SELECT id, $2, 'active', 'ADMIN' FROM new_org
+                    ON CONFLICT (org_id, email) DO UPDATE SET status='active', role='ADMIN';"#,
                 )
                 .bind(domain_part)
                 .bind(&admin_email)
@@ -171,7 +172,8 @@ async fn async_main() {
         .nest("/api/v1/auth", auth::router())
         .nest("/api/v1/admin", admin::router())
         .nest("/api/v1/keys", keys::router())
-        .nest("/api/v1/users", users::router());
+        .nest("/api/v1/users", users::router())
+        .nest("/api/v1/stories", stories::router());
 
     if test_mode {
         tracing::warn!("⚠ TEST_MODE enabled: exposing /api/v1/test helpers");

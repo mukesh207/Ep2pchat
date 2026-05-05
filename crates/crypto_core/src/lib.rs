@@ -10,6 +10,27 @@ use sha2::Sha256;
 use sodiumoxide::crypto::scalarmult::curve25519::{scalarmult, GroupElement, Scalar};
 use sodiumoxide::crypto::sign::ed25519::SecretKey as SignSecretKey;
 
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub enum CryptoError {
+    InitFailed,
+    DecryptionFailed,
+    InvalidKey,
+    InvalidNonce,
+}
+
+impl std::fmt::Display for CryptoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CryptoError::InitFailed => write!(f, "Libsodium initialization failed"),
+            CryptoError::DecryptionFailed => write!(f, "Decryption failed (invalid key or tampered ciphertext)"),
+            CryptoError::InvalidKey => write!(f, "Invalid key length"),
+            CryptoError::InvalidNonce => write!(f, "Invalid nonce length"),
+        }
+    }
+}
+
+impl std::error::Error for CryptoError {}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct IdentityKeyPair {
     pub public: String, // base64
@@ -38,8 +59,8 @@ pub struct PublicBundle {
 }
 
 /// Initialize libsodium. Must be called before any crypto operations.
-pub fn init() -> Result<(), ()> {
-    sodiumoxide::init()
+pub fn init() -> Result<(), CryptoError> {
+    sodiumoxide::init().map_err(|_| CryptoError::InitFailed)
 }
 
 pub fn generate_identity_keypair() -> (PublicKey, SecretKey) {
@@ -93,13 +114,11 @@ pub fn generate_otpk_batch(count: usize) -> Vec<OtpkPair> {
         .collect()
 }
 
-fn do_dh(sk: &SecretKey, pk: &PublicKey) -> Vec<u8> {
-    let scalar = Scalar::from_slice(sk.as_ref()).unwrap();
-    let group_element = GroupElement::from_slice(pk.as_ref()).unwrap();
-    scalarmult(&scalar, &group_element)
-        .unwrap()
-        .as_ref()
-        .to_vec()
+fn do_dh(sk: &SecretKey, pk: &PublicKey) -> Result<Vec<u8>, CryptoError> {
+    let scalar = Scalar::from_slice(sk.as_ref()).ok_or(CryptoError::InvalidKey)?;
+    let group_element = GroupElement::from_slice(pk.as_ref()).ok_or(CryptoError::InvalidKey)?;
+    let out = scalarmult(&scalar, &group_element).map_err(|_| CryptoError::DecryptionFailed)?;
+    Ok(out.as_ref().to_vec())
 }
 
 pub fn x3dh_sender(
@@ -108,10 +127,10 @@ pub fn x3dh_sender(
     bob_ik_pk: &PublicKey,
     bob_spk_pk: &PublicKey,
     bob_opk_pk: Option<&PublicKey>,
-) -> Vec<u8> {
-    let dh1 = do_dh(alice_ik_sk, bob_spk_pk);
-    let dh2 = do_dh(alice_ek_sk, bob_ik_pk);
-    let dh3 = do_dh(alice_ek_sk, bob_spk_pk);
+) -> Result<Vec<u8>, CryptoError> {
+    let dh1 = do_dh(alice_ik_sk, bob_spk_pk)?;
+    let dh2 = do_dh(alice_ek_sk, bob_ik_pk)?;
+    let dh3 = do_dh(alice_ek_sk, bob_spk_pk)?;
 
     let mut combined = Vec::new();
     combined.extend_from_slice(&dh1);
@@ -119,7 +138,7 @@ pub fn x3dh_sender(
     combined.extend_from_slice(&dh3);
 
     if let Some(opk) = bob_opk_pk {
-        let dh4 = do_dh(alice_ek_sk, opk);
+        let dh4 = do_dh(alice_ek_sk, opk)?;
         combined.extend_from_slice(&dh4);
     }
 
@@ -129,7 +148,7 @@ pub fn x3dh_sender(
     let mut okm = [0u8; 32];
     hk.expand(b"TrustlineX3DH_v1", &mut okm)
         .expect("32 bytes is always valid for HKDF-SHA256");
-    okm.to_vec()
+    Ok(okm.to_vec())
 }
 
 pub fn x3dh_receiver(
@@ -138,10 +157,10 @@ pub fn x3dh_receiver(
     bob_opk_sk: Option<&SecretKey>,
     alice_ik_pk: &PublicKey,
     alice_ek_pk: &PublicKey,
-) -> Vec<u8> {
-    let dh1 = do_dh(bob_spk_sk, alice_ik_pk);
-    let dh2 = do_dh(bob_ik_sk, alice_ek_pk);
-    let dh3 = do_dh(bob_spk_sk, alice_ek_pk);
+) -> Result<Vec<u8>, CryptoError> {
+    let dh1 = do_dh(bob_spk_sk, alice_ik_pk)?;
+    let dh2 = do_dh(bob_ik_sk, alice_ek_pk)?;
+    let dh3 = do_dh(bob_spk_sk, alice_ek_pk)?;
 
     let mut combined = Vec::new();
     combined.extend_from_slice(&dh1);
@@ -149,7 +168,7 @@ pub fn x3dh_receiver(
     combined.extend_from_slice(&dh3);
 
     if let Some(opk_sk) = bob_opk_sk {
-        let dh4 = do_dh(opk_sk, alice_ek_pk);
+        let dh4 = do_dh(opk_sk, alice_ek_pk)?;
         combined.extend_from_slice(&dh4);
     }
 
@@ -159,21 +178,36 @@ pub fn x3dh_receiver(
     let mut okm = [0u8; 32];
     hk.expand(b"TrustlineX3DH_v1", &mut okm)
         .expect("32 bytes is always valid for HKDF-SHA256");
-    okm.to_vec()
+    Ok(okm.to_vec())
 }
 
-pub fn encrypt_message(plaintext: &[u8], key: &[u8]) -> (Vec<u8>, Vec<u8>) {
+use sodiumoxide::crypto::secretbox;
+
+pub fn encrypt_symmetric(plaintext: &[u8], key: &[u8]) -> Result<(Vec<u8>, Vec<u8>), CryptoError> {
+    let key = secretbox::Key::from_slice(key).ok_or(CryptoError::InvalidKey)?;
+    let nonce = secretbox::gen_nonce();
+    let ciphertext = secretbox::seal(plaintext, &nonce, &key);
+    Ok((ciphertext, nonce.as_ref().to_vec()))
+}
+
+pub fn decrypt_symmetric(ciphertext: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    let key = secretbox::Key::from_slice(key).ok_or(CryptoError::InvalidKey)?;
+    let nonce = secretbox::Nonce::from_slice(nonce).ok_or(CryptoError::InvalidNonce)?;
+    secretbox::open(ciphertext, &nonce, &key).map_err(|_| CryptoError::DecryptionFailed)
+}
+
+pub fn encrypt_message(plaintext: &[u8], key: &[u8]) -> Result<(Vec<u8>, Vec<u8>), CryptoError> {
     let nonce_bytes = sodiumoxide::randombytes::randombytes(aead::NONCEBYTES);
-    let nonce = aead::Nonce::from_slice(&nonce_bytes).unwrap();
-    let key = aead::Key::from_slice(key).unwrap();
+    let nonce = aead::Nonce::from_slice(&nonce_bytes).ok_or(CryptoError::InvalidNonce)?;
+    let key = aead::Key::from_slice(key).ok_or(CryptoError::InvalidKey)?;
     let ciphertext = aead::seal(plaintext, None, &nonce, &key);
-    (ciphertext, nonce.as_ref().to_vec())
+    Ok((ciphertext, nonce.as_ref().to_vec()))
 }
 
-pub fn decrypt_message(ciphertext: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, ()> {
-    let nonce = aead::Nonce::from_slice(nonce).unwrap();
-    let key = aead::Key::from_slice(key).unwrap();
-    aead::open(ciphertext, None, &nonce, &key)
+pub fn decrypt_message(ciphertext: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    let nonce = aead::Nonce::from_slice(nonce).ok_or(CryptoError::InvalidNonce)?;
+    let key = aead::Key::from_slice(key).ok_or(CryptoError::InvalidKey)?;
+    aead::open(ciphertext, None, &nonce, &key).map_err(|_| CryptoError::DecryptionFailed)
 }
 
 #[cfg(test)]
@@ -209,7 +243,7 @@ mod tests {
             &bob_ik_pk,
             &bob_spk_pk,
             Some(bob_opk_pk),
-        );
+        ).unwrap();
 
         // 3. Bob's Side
         let bob_shared = x3dh_receiver(
@@ -218,13 +252,13 @@ mod tests {
             Some(bob_opk_sk),
             &alice_ik_pk,
             &alice_ek_pk,
-        );
+        ).unwrap();
 
         assert_eq!(alice_shared, bob_shared);
 
         // 4. Encrypt/Decrypt
         let message = b"Hello from Trustline!";
-        let (ciphertext, nonce) = encrypt_message(message, &alice_shared);
+        let (ciphertext, nonce) = encrypt_message(message, &alice_shared).unwrap();
         let decrypted = decrypt_message(&ciphertext, &bob_shared, &nonce).unwrap();
 
         assert_eq!(message.to_vec(), decrypted);
@@ -255,7 +289,7 @@ mod tests {
             &bob_ik_pk,
             &bob_spk_pk,
             None, // no OPK available
-        );
+        ).unwrap();
 
         let bob_shared = x3dh_receiver(
             &bob_ik_sk,
@@ -263,7 +297,7 @@ mod tests {
             None, // no OPK
             &alice_ik_pk,
             &alice_ek_pk,
-        );
+        ).unwrap();
 
         assert_eq!(alice_shared, bob_shared);
         assert_eq!(alice_shared.len(), 32); // SHA-256 output
@@ -275,7 +309,7 @@ mod tests {
         let key = sodiumoxide::randombytes::randombytes(32);
         let plaintext = b"Trustline secure message roundtrip test";
 
-        let (ciphertext, nonce) = encrypt_message(plaintext, &key);
+        let (ciphertext, nonce) = encrypt_message(plaintext, &key).unwrap();
         assert_ne!(ciphertext, plaintext.to_vec()); // encrypted is different
         assert_eq!(nonce.len(), aead::NONCEBYTES);
 
@@ -290,7 +324,7 @@ mod tests {
         let wrong_key = sodiumoxide::randombytes::randombytes(32);
         let plaintext = b"This should not decrypt with the wrong key";
 
-        let (ciphertext, nonce) = encrypt_message(plaintext, &correct_key);
+        let (ciphertext, nonce) = encrypt_message(plaintext, &correct_key).unwrap();
         let result = decrypt_message(&ciphertext, &wrong_key, &nonce);
         assert!(result.is_err());
     }

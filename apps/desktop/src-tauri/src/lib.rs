@@ -1,5 +1,5 @@
 use crypto_core::{
-    decrypt_message, encrypt_message, generate_identity_keypair, generate_one_time_pre_keys,
+    decrypt_message, decrypt_symmetric, encrypt_message, encrypt_symmetric, generate_identity_keypair, generate_one_time_pre_keys,
     generate_otpk_batch, generate_signed_pre_key, init, x3dh_receiver, x3dh_sender, MessageHeader,
     RatchetSession,
 };
@@ -135,7 +135,23 @@ pub struct EncryptedPayload {
 }
 
 #[tauri::command]
-fn alice_handshake_and_encrypt(
+fn story_encrypt(plaintext: String, key_b64: String) -> Result<(String, String), String> {
+    let key = STANDARD.decode(key_b64).map_err(|e| e.to_string())?;
+    let (ciphertext, nonce) = encrypt_symmetric(plaintext.as_bytes(), &key).map_err(|e| e.to_string())?;
+    Ok((STANDARD.encode(ciphertext), STANDARD.encode(nonce)))
+}
+
+#[tauri::command]
+fn story_decrypt(ciphertext_b64: String, key_b64: String, nonce_b64: String) -> Result<String, String> {
+    let ciphertext = STANDARD.decode(ciphertext_b64).map_err(|e| e.to_string())?;
+    let key = STANDARD.decode(key_b64).map_err(|e| e.to_string())?;
+    let nonce = STANDARD.decode(nonce_b64).map_err(|e| e.to_string())?;
+    let plaintext = decrypt_symmetric(&ciphertext, &key, &nonce).map_err(|e| e.to_string())?;
+    String::from_utf8(plaintext).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn alice_handshake_and_encrypt(
     mut alice_ik_sk: String,
     bob_ik_pk: String,
     bob_spk_pk: String,
@@ -173,9 +189,11 @@ fn alice_handshake_and_encrypt(
 
     let (aek_pk, aek_sk) = generate_identity_keypair();
 
-    let shared_secret = x3dh_sender(&aik_sk, &aek_sk, &bik_pk, &bspk_pk, bopk_pk.as_ref());
+    let shared_secret = x3dh_sender(&aik_sk, &aek_sk, &bik_pk, &bspk_pk, bopk_pk.as_ref())
+        .map_err(|e| e.to_string())?;
 
-    let (ciphertext, nonce) = encrypt_message(message.as_bytes(), &shared_secret);
+    let (ciphertext, nonce) = encrypt_message(message.as_bytes(), &shared_secret)
+        .map_err(|e| e.to_string())?;
 
     Ok((
         STANDARD.encode(aek_pk.as_ref()),
@@ -218,7 +236,8 @@ fn alice_x3dh(
         .transpose()?;
 
     let (aek_pk, aek_sk) = generate_identity_keypair();
-    let mut secret = x3dh_sender(&aik_sk, &aek_sk, &bik_pk, &bspk_pk, bopk_pk.as_ref());
+    let mut secret = x3dh_sender(&aik_sk, &aek_sk, &bik_pk, &bspk_pk, bopk_pk.as_ref())
+        .map_err(|e| e.to_string())?;
 
     let out = serde_json::json!({
         "shared_secret_b64": STANDARD.encode(&secret),
@@ -266,7 +285,8 @@ fn bob_x3dh(
     let aek_pk = PublicKey::from_slice(&STANDARD.decode(&alice_ek_pk).map_err(|e| e.to_string())?)
         .ok_or("invalid alice EK")?;
 
-    let mut secret = x3dh_receiver(&bik_sk, &bspk_sk, bopk_sk.as_ref(), &aik_pk, &aek_pk);
+    let mut secret = x3dh_receiver(&bik_sk, &bspk_sk, bopk_sk.as_ref(), &aik_pk, &aek_pk)
+        .map_err(|e| e.to_string())?;
     let out = STANDARD.encode(&secret);
     secret.zeroize();
     Ok(out)
@@ -320,13 +340,14 @@ fn bob_handshake_and_decrypt(
     let aek_pk = PublicKey::from_slice(&STANDARD.decode(alice_ek_pk).map_err(|e| e.to_string())?)
         .ok_or("invalid input: alice_ek_pk length")?;
 
-    let shared_secret = x3dh_receiver(&bik_sk, &bspk_sk, bopk_sk.as_ref(), &aik_pk, &aek_pk);
+    let shared_secret = x3dh_receiver(&bik_sk, &bspk_sk, bopk_sk.as_ref(), &aik_pk, &aek_pk)
+        .map_err(|e| e.to_string())?;
 
     let ciphertext_bytes = STANDARD.decode(ciphertext).map_err(|e| e.to_string())?;
     let nonce_bytes = STANDARD.decode(nonce).map_err(|e| e.to_string())?;
 
     let decrypted = decrypt_message(&ciphertext_bytes, &shared_secret, &nonce_bytes)
-        .map_err(|_| "Decryption failed".to_string())?;
+        .map_err(|e| e.to_string())?;
 
     String::from_utf8(decrypted).map_err(|e| e.to_string())
 }
@@ -690,6 +711,8 @@ pub fn run() {
             // OTPK replenishment
             check_and_replenish_otpks,
             collect_passkey,
+            story_encrypt,
+            story_decrypt,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

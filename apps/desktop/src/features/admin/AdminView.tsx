@@ -9,12 +9,12 @@ import { useAdmin, type AdminUser, type PendingUser } from "./useAdmin";
 type TabKey = "pending" | "devices" | "audit" | "settings";
 
 export default function AdminView({
-  isAdmin,
+  role,
   currentDeviceId,
   onRevocation,
   onBack,
 }: {
-  isAdmin: boolean;
+  role: string;
   currentDeviceId: string | null;
   onRevocation: () => void;
   onBack: () => void;
@@ -25,10 +25,10 @@ export default function AdminView({
   const [pending, setPending] = useState<PendingUser[]>([]);
 
   useEffect(() => {
-    if (!isAdmin) return;
+    if (role !== "ADMIN") return;
     void admin.fetchUsers().then((rows: AdminUser[]) => setUsers(rows));
     void admin.fetchPending().then((rows: PendingUser[]) => setPending(rows));
-  }, [isAdmin, admin]);
+  }, [role, admin]);
 
   const tabs = useMemo(
     () => [
@@ -45,7 +45,7 @@ export default function AdminView({
     setPending(rows);
   };
 
-  if (!isAdmin) {
+  if (role !== "ADMIN") {
     return (
       <div className="admin-container">
         <div className="admin-error">
