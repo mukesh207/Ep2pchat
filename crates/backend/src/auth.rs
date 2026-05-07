@@ -141,39 +141,39 @@ pub fn router() -> Router<AppState> {
 async fn admin_bootstrap(
     State(state): State<AppState>,
     Json(payload): Json<AdminBootstrapPayload>,
-) -> Json<Value> {
+) -> Result<Json<Value>, AppError> {
     let email = payload.email.trim().to_lowercase();
     let provided_setup_token = payload.setup_token.unwrap_or_default();
 
     if !state.admin_bootstrap_enabled {
-        return Json(json!({"error": "Admin bootstrap is disabled"}));
+        return Err(AppError::Forbidden("Admin bootstrap is disabled".into()));
     }
 
     let expected_setup_token = match state.admin_bootstrap_setup_token.as_ref() {
         Some(token) => token,
         None => {
             tracing::error!("ADMIN_BOOTSTRAP_ENABLED=true but setup token is not configured");
-            return Json(json!({"error": "Admin bootstrap is not configured"}));
+            return Err(AppError::Internal("Admin bootstrap is not configured".into()));
         }
     };
 
     if provided_setup_token.trim().is_empty() || provided_setup_token.trim() != expected_setup_token
     {
         tracing::warn!("⚠️ Admin bootstrap rejected due to invalid setup token");
-        return Json(json!({"error": "Admin bootstrap credentials invalid or unavailable"}));
+        return Err(AppError::Unauthorized("Admin bootstrap credentials invalid or unavailable".into()));
     }
 
     // Rate limit: 5 attempts per minute per email
     if !state.rate_limiter.check(&format!("admin-bootstrap:{}", email)) {
         tracing::warn!("⚠️ Rate limit exceeded for admin-bootstrap: {}", email);
-        return Json(json!({"error": "Too many attempts. Please try again in a minute."}));
+        return Err(AppError::Forbidden("Too many attempts. Please try again in a minute.".into()));
     }
 
     // Only allow the configured admin email
     let admin_email = std::env::var("ADMIN_EMAIL").unwrap_or_default().trim().to_lowercase();
 
     if admin_email.is_empty() || email != admin_email {
-        return Json(json!({"error": "Admin bootstrap is not available for this email"}));
+        return Err(AppError::Forbidden("Admin bootstrap is not available for this email".into()));
     }
 
     // Look up the admin user
@@ -181,14 +181,13 @@ async fn admin_bootstrap(
         sqlx::query("SELECT u.id, u.org_id, u.role, u.status, u.username, u.department FROM users u WHERE u.email = $1")
             .bind(&email)
             .fetch_optional(&state.db)
-            .await;
+            .await?;
 
     let row = match row {
-        Ok(Some(r)) => r,
-        Ok(None) => {
-            return Json(json!({"error": "Admin user not found. Restart the backend to seed."}))
+        Some(r) => r,
+        None => {
+            return Err(AppError::NotFound("Admin user not found. Restart the backend to seed.".into()))
         }
-        Err(e) => return Json(json!({"error": format!("Database error: {}", e)})),
     };
 
     let user_id: Uuid = row.get("id");
@@ -199,11 +198,11 @@ async fn admin_bootstrap(
     let department: Option<String> = row.get("department");
 
     if status != "active" || role != "ADMIN" {
-        return Json(json!({"error": "User is not an active admin"}));
+        return Err(AppError::Forbidden("User is not an active admin".into()));
     }
 
     if state.admin_bootstrap_consumed.swap(true, Ordering::AcqRel) {
-        return Json(json!({"error": "Admin bootstrap has already been used"}));
+        return Err(AppError::Forbidden("Admin bootstrap has already been used".into()));
     }
 
     let jti = Uuid::new_v4();
@@ -230,7 +229,7 @@ async fn admin_bootstrap(
 
     if let Err(e) = session_store {
         state.admin_bootstrap_consumed.store(false, Ordering::Release);
-        return Json(json!({"error": format!("Failed to create session: {}", e)}));
+        return Err(e.into());
     }
 
     let token = match encode(
@@ -241,12 +240,12 @@ async fn admin_bootstrap(
         Ok(t) => t,
         Err(e) => {
             state.admin_bootstrap_consumed.store(false, Ordering::Release);
-            return Json(json!({"error": format!("Failed to create token: {}", e)}));
+            return Err(AppError::Internal(format!("Failed to create token: {}", e)));
         }
     };
 
     tracing::info!("✅ Admin bootstrap: issued JWT for {}", email);
-    Json(json!({
+    Ok(Json(json!({
         "status": "success",
         "token": token,
         "user_id": user_id,
@@ -254,7 +253,7 @@ async fn admin_bootstrap(
         "role": role,
         "username": username,
         "department": department
-    }))
+    })))
 }
 
 #[derive(Deserialize)]
@@ -269,24 +268,26 @@ pub struct AdminBootstrapPayload {
     pub setup_token: Option<String>,
 }
 
+use crate::error::AppError;
+
 pub async fn request_access(
     State(state): State<AppState>,
     Json(payload): Json<RequestAccessPayload>,
-) -> Json<Value> {
+) -> Result<Json<Value>, AppError> {
     let email = payload.email.trim().to_lowercase();
     let (_, domain_part) = match email.split_once('@') {
         Some(parts) => parts,
-        None => return Json(json!({"error": "Invalid email address"})),
+        None => return Err(AppError::BadRequest("Invalid email address".into())),
     };
     if domain_part.is_empty() {
-        return Json(json!({"error": "Invalid email address"}));
+        return Err(AppError::BadRequest("Invalid email address".into()));
     }
     let domain = domain_part.to_string();
     let email_for_insert = email.clone();
     let metadata = payload.metadata.unwrap_or(json!({}));
 
     // RLS: org_id scoped
-    let res = crate::db::with_rls_context(&state.db, Uuid::nil(), |tx| Box::pin(async move {
+    let (user_id, status, access_code) = crate::db::with_rls_context(&state.db, Uuid::nil(), |tx| Box::pin(async move {
         let org_record = sqlx::query(
             "INSERT INTO organizations (domain, name) VALUES ($1, $2) ON CONFLICT (domain) DO UPDATE SET domain=EXCLUDED.domain RETURNING id"
         )
@@ -319,21 +320,16 @@ pub async fn request_access(
         let access_code = build_access_code(user_id);
 
         Ok((user_id, status, access_code))
-    })).await;
+    })).await?;
 
-    match res {
-        Ok((user_id, status, access_code)) => {
-            if status == "active" {
-                Json(
-                    json!({"status": "active", "message": "User is already active.", "user_id": user_id, "access_code": access_code}),
-                )
-            } else {
-                Json(
-                    json!({"status": "pending", "message": "Access requested. Waiting for admin approval.", "user_id": user_id, "access_code": access_code}),
-                )
-            }
-        }
-        Err(e) => Json(json!({"error": format!("Failed to request access: {}", e)})),
+    if status == "active" {
+        Ok(Json(
+            json!({"status": "active", "message": "User is already active.", "user_id": user_id, "access_code": access_code}),
+        ))
+    } else {
+        Ok(Json(
+            json!({"status": "pending", "message": "Access requested. Waiting for admin approval.", "user_id": user_id, "access_code": access_code}),
+        ))
     }
 }
 
@@ -345,8 +341,8 @@ pub struct RegisterBeginPayload {
 pub async fn register_passkey_begin(
     State(state): State<AppState>,
     Json(payload): Json<RegisterBeginPayload>,
-) -> Json<Value> {
-    let res = crate::db::with_rls_context(&state.db, Uuid::nil(), |tx| {
+) -> Result<Json<Value>, AppError> {
+    let (email, org_id, exclude_credentials) = crate::db::with_rls_context(&state.db, Uuid::nil(), |tx| {
         Box::pin(async move {
             let user_row = sqlx::query("SELECT org_id, email, status FROM users WHERE id = $1")
                 .bind(payload.user_id)
@@ -388,28 +384,25 @@ pub async fn register_passkey_begin(
             Ok((email, org_id, exclude_credentials))
         })
     })
-    .await;
+    .await?;
 
-    let (email, org_id, exclude_credentials) = match res {
-        Ok(t) => t,
-        Err(e) => return Json(json!({"error": format!("DB error: {}", e)})),
-    };
-
-    let webauthn_res = match state.webauthn.start_passkey_registration(
+    let webauthn_res = state.webauthn.start_passkey_registration(
         payload.user_id,
         &email,
         &email,
         Some(exclude_credentials),
-    ) {
-        Ok(r) => r,
-        Err(e) => return Json(json!({"error": format!("WebAuthn error: {:?}", e)})),
-    };
+    ).map_err(|e| AppError::Internal(format!("WebAuthn error: {:?}", e)))?;
 
     let (ccr, reg_state) = webauthn_res;
     let reg_state_json = serde_json::to_value(&reg_state).unwrap();
     let expires_at = chrono::Utc::now() + chrono::Duration::minutes(5);
 
-    let store_res = crate::db::with_rls_context(&state.db, org_id, |tx| Box::pin(async move {
+    crate::db::with_rls_context(&state.db, org_id, |tx| Box::pin(async move {
+        let _ = sqlx::query("DELETE FROM webauthn_sessions WHERE user_id = $1 AND session_type = 'registration'")
+            .bind(payload.user_id)
+            .execute(&mut *tx)
+            .await;
+
         sqlx::query(
             "INSERT INTO webauthn_sessions (user_id, org_id, challenge, session_type, expires_at) VALUES ($1, $2, $3, 'registration', $4)"
         )
@@ -419,13 +412,9 @@ pub async fn register_passkey_begin(
         .bind(expires_at)
         .execute(&mut *tx)
         .await
-    })).await;
+    })).await?;
 
-    if let Err(e) = store_res {
-        return Json(json!({"error": format!("Failed to store session: {}", e)}));
-    }
-
-    Json(json!({ "challenge": ccr }))
+    Ok(Json(json!({ "challenge": ccr })))
 }
 
 #[derive(Deserialize)]
@@ -437,8 +426,8 @@ pub struct RegisterCompletePayload {
 pub async fn register_passkey_complete(
     State(state): State<AppState>,
     Json(payload): Json<RegisterCompletePayload>,
-) -> Json<Value> {
-    let session_res = crate::db::with_rls_context(&state.db, Uuid::nil(), |tx| Box::pin(async move {
+) -> Result<Json<Value>, AppError> {
+    let (challenge_val, org_id) = crate::db::with_rls_context(&state.db, Uuid::nil(), |tx| Box::pin(async move {
         let session_row = sqlx::query(
             "DELETE FROM webauthn_sessions WHERE user_id = $1 AND session_type = 'registration' AND expires_at > NOW() RETURNING challenge, org_id"
         )
@@ -454,28 +443,18 @@ pub async fn register_passkey_complete(
         let challenge_val: Value = row.get("challenge");
         let org_id: Uuid = row.get("org_id");
         Ok((challenge_val, org_id))
-    })).await;
+    })).await?;
 
-    let (challenge_val, org_id) = match session_res {
-        Ok(t) => t,
-        Err(e) => return Json(json!({"error": format!("DB Error: {}", e)})),
-    };
+    let reg_state: PasskeyRegistration = serde_json::from_value(challenge_val)
+        .map_err(|_| AppError::BadRequest("Invalid session state".into()))?;
 
-    let reg_state: PasskeyRegistration = match serde_json::from_value(challenge_val) {
-        Ok(s) => s,
-        Err(_) => return Json(json!({"error": "Invalid session state"})),
-    };
-
-    let passkey = match state.webauthn.finish_passkey_registration(&payload.credential, &reg_state)
-    {
-        Ok(p) => p,
-        Err(e) => return Json(json!({"error": format!("Registration failed: {:?}", e)})),
-    };
+    let passkey = state.webauthn.finish_passkey_registration(&payload.credential, &reg_state)
+        .map_err(|e| AppError::BadRequest(format!("Registration failed: {:?}", e)))?;
 
     let passkey_json = serde_json::to_value(&passkey).unwrap();
     let cred_id = passkey.cred_id().clone();
 
-    let insert_res = crate::db::with_rls_context(&state.db, org_id, |tx| Box::pin(async move {
+    crate::db::with_rls_context(&state.db, org_id, |tx| Box::pin(async move {
         sqlx::query(
             "INSERT INTO passkeys (user_id, org_id, passkey_id, passkey_data) VALUES ($1, $2, $3, $4)"
         )
@@ -485,13 +464,9 @@ pub async fn register_passkey_complete(
         .bind(passkey_json)
         .execute(&mut *tx)
         .await
-    })).await;
+    })).await?;
 
-    if let Err(e) = insert_res {
-        return Json(json!({"error": format!("Failed to store passkey: {}", e)}));
-    }
-
-    Json(json!({"status": "success", "message": "Passkey registered successfully"}))
+    Ok(Json(json!({"status": "success", "message": "Passkey registered successfully"})))
 }
 
 #[derive(Deserialize)]
@@ -502,10 +477,10 @@ pub struct LoginBeginPayload {
 pub async fn login_begin(
     State(state): State<AppState>,
     Json(payload): Json<LoginBeginPayload>,
-) -> Json<Value> {
+) -> Result<Json<Value>, AppError> {
     let email = payload.email.trim().to_lowercase();
 
-    let start_res = crate::db::with_rls_context(&state.db, Uuid::nil(), |tx| {
+    let (user_id, org_id, passkeys) = crate::db::with_rls_context(&state.db, Uuid::nil(), |tx| {
         Box::pin(async move {
             let user_row =
                 sqlx::query("SELECT id, org_id, role FROM users WHERE email = $1 AND status = 'active'")
@@ -555,33 +530,31 @@ pub async fn login_begin(
             Ok((user_id, org_id, passkeys))
         })
     })
-    .await;
-
-    let (user_id, org_id, passkeys) = match start_res {
-        Ok(t) => t,
-        Err(e) => {
-            let err_str = e.to_string();
-            if err_str.contains("MAINTENANCE_MODE") {
-                return Json(json!({"error": "MAINTENANCE_MODE"}));
-            }
-            return Json(json!({"error": format!("DB error: {}", e)}));
+    .await.map_err(|e| {
+        let err_str = e.to_string();
+        if err_str.contains("MAINTENANCE_MODE") {
+            // Re-wrap specialized error string if needed, or handle in AppError
+            return AppError::Forbidden("MAINTENANCE_MODE".into());
         }
-    };
+        AppError::from(e)
+    })?;
 
     if passkeys.is_empty() {
-        return Json(json!({"error": "No passkeys found for this user"}));
+        return Err(AppError::NotFound("No passkeys found for this user".into()));
     }
 
-    let auth_res = match state.webauthn.start_passkey_authentication(&passkeys) {
-        Ok(r) => r,
-        Err(e) => return Json(json!({"error": format!("WebAuthn error: {:?}", e)})),
-    };
-    let (rcr, auth_state) = auth_res;
+    let (rcr, auth_state) = state.webauthn.start_passkey_authentication(&passkeys)
+        .map_err(|e| AppError::Internal(format!("WebAuthn error: {:?}", e)))?;
 
     let auth_state_json = serde_json::to_value(&auth_state).unwrap();
     let expires_at = chrono::Utc::now() + chrono::Duration::minutes(5);
 
-    let store_res = crate::db::with_rls_context(&state.db, org_id, |tx| Box::pin(async move {
+    crate::db::with_rls_context(&state.db, org_id, |tx| Box::pin(async move {
+        let _ = sqlx::query("DELETE FROM webauthn_sessions WHERE user_id = $1 AND session_type = 'authentication'")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await;
+
         sqlx::query(
             "INSERT INTO webauthn_sessions (user_id, org_id, challenge, session_type, expires_at) VALUES ($1, $2, $3, 'authentication', $4)"
         )
@@ -591,13 +564,9 @@ pub async fn login_begin(
         .bind(expires_at)
         .execute(&mut *tx)
         .await
-    })).await;
+    })).await?;
 
-    if let Err(e) = store_res {
-        return Json(json!({"error": format!("Failed to store session: {}", e)}));
-    }
-
-    Json(json!({ "challenge": rcr, "user_id": user_id }))
+    Ok(Json(json!({ "challenge": rcr, "user_id": user_id })))
 }
 
 #[derive(Deserialize)]
@@ -609,8 +578,8 @@ pub struct LoginCompletePayload {
 pub async fn login_complete(
     State(state): State<AppState>,
     Json(payload): Json<LoginCompletePayload>,
-) -> Json<Value> {
-    let session_res = crate::db::with_rls_context(&state.db, Uuid::nil(), |tx| Box::pin(async move {
+) -> Result<Json<Value>, AppError> {
+    let (challenge_val, org_id) = crate::db::with_rls_context(&state.db, Uuid::nil(), |tx| Box::pin(async move {
         let session_row = sqlx::query(
             "DELETE FROM webauthn_sessions WHERE user_id = $1 AND session_type = 'authentication' AND expires_at > NOW() RETURNING challenge, org_id"
         )
@@ -626,28 +595,18 @@ pub async fn login_complete(
         let challenge_val: Value = row.get("challenge");
         let org_id: Uuid = row.get("org_id");
         Ok((challenge_val, org_id))
-    })).await;
+    })).await?;
 
-    let (challenge_val, org_id) = match session_res {
-        Ok(t) => t,
-        Err(e) => return Json(json!({"error": format!("DB Error: {}", e)})),
-    };
+    let auth_state: PasskeyAuthentication = serde_json::from_value(challenge_val)
+        .map_err(|_| AppError::BadRequest("Invalid session state".into()))?;
 
-    let auth_state: PasskeyAuthentication = match serde_json::from_value(challenge_val) {
-        Ok(s) => s,
-        Err(_) => return Json(json!({"error": "Invalid session state"})),
-    };
-
-    let auth_verify =
-        match state.webauthn.finish_passkey_authentication(&payload.credential, &auth_state) {
-            Ok(r) => r,
-            Err(e) => return Json(json!({"error": format!("Authentication failed: {:?}", e)})),
-        };
+    let auth_verify = state.webauthn.finish_passkey_authentication(&payload.credential, &auth_state)
+        .map_err(|e| AppError::BadRequest(format!("Authentication failed: {:?}", e)))?;
 
     let cred_id = auth_verify.cred_id().clone();
     let passkey_json = serde_json::to_value(&auth_verify).unwrap();
 
-    let final_res = crate::db::with_rls_context(&state.db, org_id, |tx| {
+    let user_record = crate::db::with_rls_context(&state.db, org_id, |tx| {
         Box::pin(async move {
             let _ = sqlx::query(
                 "UPDATE passkeys SET passkey_data = $1 WHERE passkey_id = $2 AND user_id = $3",
@@ -666,11 +625,11 @@ pub async fn login_complete(
             Ok(user_record)
         })
     })
-    .await;
+    .await?;
 
-    let user_record = match final_res {
-        Ok(Some(r)) => r,
-        _ => return Json(json!({"error": "User not found or DB err"})),
+    let user_record = match user_record {
+        Some(r) => r,
+        _ => return Err(AppError::NotFound("User not found".into())),
     };
 
     let role: String = user_record.get("role");
@@ -692,21 +651,18 @@ pub async fn login_complete(
     };
 
     // Store session in DB
-    let _ = sqlx::query("INSERT INTO sessions (jti, user_id, expires_at) VALUES ($1, $2, $3)")
+    sqlx::query("INSERT INTO sessions (jti, user_id, expires_at) VALUES ($1, $2, $3)")
         .bind(jti)
         .bind(payload.user_id)
         .bind(expiration_dt)
         .execute(&state.db)
-        .await;
+        .await?;
 
-    let token = match encode(
+    let token = encode(
         &Header::default(),
         &claims,
         &EncodingKey::from_secret(state.jwt_secret.as_bytes()),
-    ) {
-        Ok(t) => t,
-        Err(e) => return Json(json!({"error": format!("Failed to create token: {}", e)})),
-    };
+    ).map_err(|e| AppError::Internal(format!("Failed to create token: {}", e)))?;
 
-    Json(json!({"status": "success", "token": token, "user_id": payload.user_id, "org_id": org_id, "role": role, "username": username, "department": department}))
+    Ok(Json(json!({"status": "success", "token": token, "user_id": payload.user_id, "org_id": org_id, "role": role, "username": username, "department": department})))
 }

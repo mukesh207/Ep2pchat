@@ -30,14 +30,16 @@ pub struct UpdateProfilePayload {
     pub presence_status: Option<String>,
 }
 
+use crate::error::AppError;
+
 pub async fn update_profile(
     State(state): State<AppState>,
     auth: AuthContext,
     Json(payload): Json<UpdateProfilePayload>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<Json<Value>, AppError> {
     let presence_status = payload.presence_status.clone();
 
-    let res = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
+    crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
         Box::pin(async move {
             sqlx::query(
                 "UPDATE users 
@@ -55,33 +57,22 @@ pub async fn update_profile(
             .await
         })
     })
-    .await;
+    .await?;
 
-    match res {
-        Ok(_) => {
-            // Broadcast presence update if changed
-            if let Some(status) = presence_status {
-                let subject = format!("presence.org.{}", auth.claims.org_id);
-                let presence_msg = json!({
-                    "type": "PRESENCE_UPDATE",
-                    "payload": {
-                        "user_id": auth.claims.sub,
-                        "status": status
-                    }
-                });
-                state.nats.publish(subject, presence_msg.to_string().into()).await;
+    // Broadcast presence update if changed
+    if let Some(status) = presence_status {
+        let subject = format!("presence.org.{}", auth.claims.org_id);
+        let presence_msg = json!({
+            "type": "PRESENCE_UPDATE",
+            "payload": {
+                "user_id": auth.claims.sub,
+                "status": status
             }
-
-            Ok(Json(json!({ "status": "success" })))
-        },
-        Err(e) => {
-            tracing::error!("Failed to update profile: {}", e);
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "An internal error occurred"})),
-            ))
-        }
+        });
+        state.nats.publish(subject, presence_msg.to_string().into()).await;
     }
+
+    Ok(Json(json!({ "status": "success" })))
 }
 
 #[derive(Deserialize)]
@@ -94,17 +85,14 @@ pub async fn log_security_event(
     State(state): State<AppState>,
     auth: AuthContext,
     Json(payload): Json<LogEventPayload>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<Json<Value>, AppError> {
     // Only allow specific white-listed actions to be logged via this endpoint
     let allowed_actions = ["DATA_EXPORT", "VAULT_BACKUP", "AUDIT_LOG_EXPORT"];
     if !allowed_actions.contains(&payload.action.as_str()) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "Invalid action"})),
-        ));
+        return Err(AppError::BadRequest("Invalid action".into()));
     }
 
-    let res = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
+    crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
         Box::pin(async move {
             sqlx::query(
                 "INSERT INTO audit_logs (org_id, actor_id, action, details) VALUES ($1, $2, $3, $4)",
@@ -117,18 +105,9 @@ pub async fn log_security_event(
             .await
         })
     })
-    .await;
+    .await?;
 
-    match res {
-        Ok(_) => Ok(Json(json!({ "status": "success" }))),
-        Err(e) => {
-            tracing::error!("Failed to log security event: {}", e);
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "An internal error occurred"})),
-            ))
-        }
-    }
+    Ok(Json(json!({ "status": "success" })))
 }
 
 #[derive(Serialize)]
@@ -144,9 +123,9 @@ struct UserInfo {
 pub async fn get_users(
     State(state): State<AppState>,
     auth: AuthContext,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<Json<Value>, AppError> {
     // RLS: org_id scoped
-    let records = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
+    let rows = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
         Box::pin(async move {
             sqlx::query(
                 "SELECT u.id, u.email, u.username, u.presence_status, u.department, COUNT(d.id) AS device_count
@@ -160,31 +139,20 @@ pub async fn get_users(
             .await
         })
     })
-    .await;
+    .await?;
 
-    match records {
-        Ok(rows) => {
-            let mut users = Vec::new();
-            for row in rows {
-                users.push(UserInfo {
-                    id: row.get("id"),
-                    email: row.get("email"),
-                    username: row.get("username"),
-                    device_count: row.get("device_count"),
-                    presence_status: row.get("presence_status"),
-                    department: row.get("department"),
-                });
-            }
-            Ok(Json(json!({"users": users})))
-        }
-        Err(e) => {
-            tracing::error!("Failed to list users: {}", e);
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "An internal error occurred"})),
-            ))
-        }
+    let mut users = Vec::new();
+    for row in rows {
+        users.push(UserInfo {
+            id: row.get("id"),
+            email: row.get("email"),
+            username: row.get("username"),
+            device_count: row.get("device_count"),
+            presence_status: row.get("presence_status"),
+            department: row.get("department"),
+        });
     }
+    Ok(Json(json!({"users": users})))
 }
 
 #[derive(Serialize)]
@@ -198,7 +166,7 @@ pub struct MyDeviceInfo {
 pub async fn get_my_devices(
     State(state): State<AppState>,
     auth: AuthContext,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<Json<Value>, AppError> {
     // RLS: org_id scoped
     let rows = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
         Box::pin(async move {
@@ -214,29 +182,18 @@ pub async fn get_my_devices(
             .await
         })
     })
-    .await;
+    .await?;
 
-    match rows {
-        Ok(records) => {
-            let devices: Vec<MyDeviceInfo> = records
-                .into_iter()
-                .map(|row| MyDeviceInfo {
-                    id: row.get("id"),
-                    device_name: row.get("device_name"),
-                    is_active: row.get("is_active"),
-                    last_seen: row.get("last_seen"),
-                })
-                .collect();
-            Ok(Json(json!({ "devices": devices })))
-        }
-        Err(e) => {
-            tracing::error!("Failed to list own devices: {}", e);
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "An internal error occurred"})),
-            ))
-        }
-    }
+    let devices: Vec<MyDeviceInfo> = rows
+        .into_iter()
+        .map(|row| MyDeviceInfo {
+            id: row.get("id"),
+            device_name: row.get("device_name"),
+            is_active: row.get("is_active"),
+            last_seen: row.get("last_seen"),
+        })
+        .collect();
+    Ok(Json(json!({ "devices": devices })))
 }
 
 #[derive(Deserialize)]
@@ -248,9 +205,9 @@ pub async fn revoke_own_device(
     State(state): State<AppState>,
     auth: AuthContext,
     Json(payload): Json<RevokeOwnDevicePayload>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<Json<Value>, AppError> {
     // RLS: org_id scoped
-    let res = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
+    let row = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
         Box::pin(async move {
             let row = sqlx::query(
                 "UPDATE devices
@@ -289,31 +246,20 @@ pub async fn revoke_own_device(
             Ok(row)
         })
     })
-    .await;
+    .await?;
 
-    match res {
-        Ok(Some(_)) => {
-            // Purge pending messages from NATS JetStream
-            let routing_subject = format!("routing.{}", payload.device_id);
-            state.nats.purge_subject(routing_subject).await;
+    if let Some(_) = row {
+        // Purge pending messages from NATS JetStream
+        let routing_subject = format!("routing.{}", payload.device_id);
+        state.nats.purge_subject(routing_subject).await;
 
-            if let Some((_, conn)) = state.ws.connections.remove(&payload.device_id) {
-                let event = json!({ "type": "DEVICE_REVOKED", "payload": { "device_id": payload.device_id } });
-                let _ = conn.tx.send(WsMessage::Text(event.to_string().into()));
-                let _ = conn.tx.send(WsMessage::Close(None));
-            }
-            Ok(Json(json!({ "status": "success" })))
+        if let Some((_, conn)) = state.ws.connections.remove(&payload.device_id) {
+            let event = json!({ "type": "DEVICE_REVOKED", "payload": { "device_id": payload.device_id } });
+            let _ = conn.tx.send(WsMessage::Text(event.to_string().into()));
+            let _ = conn.tx.send(WsMessage::Close(None));
         }
-        Ok(None) => Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": "Device not found"})),
-        )),
-        Err(e) => {
-            tracing::error!("Failed to self-revoke device: {}", e);
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "An internal error occurred"})),
-            ))
-        }
+        Ok(Json(json!({ "status": "success" })))
+    } else {
+        Err(AppError::NotFound("Device not found".into()))
     }
 }

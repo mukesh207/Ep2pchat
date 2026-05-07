@@ -83,7 +83,7 @@
   </div>
 
   <script type="module">
-    import { startRegistration, startAuthentication } from 'https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@11/dist/bundle/index.min.js';
+    import { startRegistration, startAuthentication } from 'https://esm.sh/@simplewebauthn/browser@13.3.0';
 
     const params = new URLSearchParams(window.location.search);
     const mode       = params.get('mode') || 'register';
@@ -104,7 +104,11 @@
 
       let challenge;
       try {
-        challenge = JSON.parse(atob(challengeB));
+        challenge = JSON.parse(atob(decodeURIComponent(challengeB)));
+        // webauthn-rs wraps the options inside `publicKey`
+        if (challenge && challenge.publicKey) {
+          challenge = challenge.publicKey;
+        }
       } catch {
         setStatus('❌ Invalid challenge data.', 'status-error');
         return;

@@ -341,6 +341,14 @@ async fn handle_socket(socket: WebSocket, state: AppState, device_id: Uuid, clai
                                 "type": "DEVICE_REVOKED",
                                 "payload": { "device_id": device_id }
                             }),
+                            RoutedEvent::StoryKeyShare { sender_user_id, ciphertext, header } => json!({
+                                "type": "STORY_KEY_SHARE",
+                                "payload": {
+                                    "sender_user_id": sender_user_id,
+                                    "ciphertext": ciphertext,
+                                    "header": header
+                                }
+                            }),
                         };
                         if nats_tx.send(Message::Text(ws_msg.to_string().into())).is_err() {
                             break;

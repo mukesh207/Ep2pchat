@@ -39,49 +39,28 @@ pub struct UploadKeysPayload {
     pub one_time_pre_keys: Vec<OneTimeKeyPayload>,
 }
 
+use crate::error::AppError;
+
 pub async fn upload_keys(
     State(state): State<AppState>,
     auth: AuthContext,
     Json(payload): Json<UploadKeysPayload>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<Json<Value>, AppError> {
     if auth.claims.sub != payload.user_id || auth.claims.org_id != payload.org_id {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "Forbidden: Cannot upload keys for another user"})),
-        ));
+        return Err(AppError::Forbidden("Cannot upload keys for another user".into()));
     }
 
-    let ik = match base64::engine::general_purpose::STANDARD.decode(&payload.identity_key) {
-        Ok(k) => k,
-        Err(_) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "Invalid base64 for identity_key"})),
-            ))
-        }
-    };
-    let spk = match base64::engine::general_purpose::STANDARD.decode(&payload.signed_pre_key) {
-        Ok(k) => k,
-        Err(_) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "Invalid base64 for signed_pre_key"})),
-            ))
-        }
-    };
-    let spk_sig =
-        match base64::engine::general_purpose::STANDARD.decode(&payload.signed_pre_key_sig) {
-            Ok(k) => k,
-            Err(_) => {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error": "Invalid base64 for signed_pre_key_sig"})),
-                ))
-            }
-        };
+    let ik = base64::engine::general_purpose::STANDARD.decode(&payload.identity_key)
+        .map_err(|_| AppError::BadRequest("Invalid base64 for identity_key".into()))?;
+        
+    let spk = base64::engine::general_purpose::STANDARD.decode(&payload.signed_pre_key)
+        .map_err(|_| AppError::BadRequest("Invalid base64 for signed_pre_key".into()))?;
+        
+    let spk_sig = base64::engine::general_purpose::STANDARD.decode(&payload.signed_pre_key_sig)
+        .map_err(|_| AppError::BadRequest("Invalid base64 for signed_pre_key_sig".into()))?;
 
     // RLS: org_id scoped
-    let result = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| Box::pin(async move {
+    let device_id = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| Box::pin(async move {
         let device_row = sqlx::query(
             "INSERT INTO devices (user_id, org_id, device_name, identity_key_public, signed_pre_key_public, signed_pre_key_signature)
              VALUES ($1, $2, $3, $4, $5, $6) RETURNING id"
@@ -106,7 +85,7 @@ pub async fn upload_keys(
 
         for opk in payload.one_time_pre_keys {
             let opk_bytes = base64::engine::general_purpose::STANDARD.decode(&opk.public_key)
-                .map_err(|_| sqlx::Error::Decode("Invalid bounds".into()))?;
+                .map_err(|_| sqlx::Error::Decode("Invalid base64 in OTPK".into()))?;
 
             sqlx::query(
                 "INSERT INTO one_time_pre_keys (device_id, org_id, key_id, public_key) VALUES ($1, $2, $3, $4)"
@@ -120,18 +99,9 @@ pub async fn upload_keys(
         }
 
         Ok(device_id)
-    })).await;
+    })).await?;
 
-    match result {
-        Ok(device_id) => Ok(Json(json!({"status": "success", "device_id": device_id}))),
-        Err(e) => {
-            tracing::error!("Key upload failed: {}", e);
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "An internal error occurred"})),
-            ))
-        }
-    }
+    Ok(Json(json!({"status": "success", "device_id": device_id})))
 }
 
 #[derive(Serialize, Clone)]
@@ -148,7 +118,7 @@ pub async fn get_user_keys_handler(
     State(state): State<AppState>,
     auth: AuthContext,
     Path(user_id): Path<Uuid>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<Json<Value>, AppError> {
     // RLS: org_id scoped
     let allowed = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
         Box::pin(async move {
@@ -164,29 +134,17 @@ pub async fn get_user_keys_handler(
             }
         })
     })
-    .await;
+    .await?;
 
-    match allowed {
-        Ok(true) => {}
-        Ok(false) => {
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(json!({"error": "Cross-tenant key request denied / User not found"})),
-            ))
-        }
-        Err(e) => {
-            tracing::error!("User key fetch org check failed: {}", e);
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "An internal error occurred"})),
-            ))
-        }
+    if !allowed {
+        return Err(AppError::Forbidden("Cross-tenant key request denied / User not found".into()));
     }
 
-    match get_user_keys_internal(&state.db, user_id, auth.claims.org_id).await {
-        Ok(bundles) => Ok(Json(json!({ "user_id": user_id, "devices": bundles }))),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e})))),
-    }
+    let bundles = get_user_keys_internal(&state.db, user_id, auth.claims.org_id)
+        .await
+        .map_err(AppError::Internal)?;
+
+    Ok(Json(json!({ "user_id": user_id, "devices": bundles })))
 }
 
 pub async fn get_user_keys_internal(

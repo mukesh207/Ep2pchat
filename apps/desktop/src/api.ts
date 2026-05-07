@@ -2,6 +2,7 @@ import { startRegistration, startAuthentication } from '@simplewebauthn/browser'
 import { invoke } from '@tauri-apps/api/core';
 import type { KeyUploadPayload } from './types';
 import { API_BASE_URL, ADMIN_BOOTSTRAP_SETUP_TOKEN } from './lib/config';
+import { AppError, ErrorCategory } from './lib/errors';
 
 let authToken = "";
 
@@ -21,11 +22,31 @@ export function authHeaders() {
 }
 
 export async function requestJson(path: string, init?: RequestInit) {
-    const res = await fetch(`${API_BASE_URL}${path}`, init);
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data?.error) {
-        throw new Error(data?.error || `Request failed with status ${res.status}`);
+    let res: Response;
+    try {
+        res = await fetch(`${API_BASE_URL}${path}`, init);
+    } catch (err) {
+        throw new AppError("Network request failed", ErrorCategory.NETWORK, { details: err });
     }
+
+    const data = await res.json().catch(() => ({}));
+    
+    if (!res.ok) {
+        const msg = data?.error || `Request failed with status ${res.status}`;
+        
+        if (res.status === 401) throw new AppError(msg, ErrorCategory.AUTH);
+        if (res.status === 403) throw new AppError(msg, ErrorCategory.FORBIDDEN);
+        if (msg === "MAINTENANCE_MODE") throw new AppError(msg, ErrorCategory.MAINTENANCE);
+        if (res.status >= 500) throw new AppError(msg, ErrorCategory.SERVER);
+        
+        throw new AppError(msg, ErrorCategory.VALIDATION, { code: String(res.status) });
+    }
+
+    if (data?.error) {
+        if (data.error === "MAINTENANCE_MODE") throw new AppError(data.error, ErrorCategory.MAINTENANCE);
+        throw new AppError(data.error, ErrorCategory.VALIDATION);
+    }
+
     return data;
 }
 
@@ -87,12 +108,12 @@ export async function registerPasskey(userId: string) {
         // Tauri on Linux: WebAuthn is not available in the webview.
         // Open the system browser via the Rust bridge to collect the passkey.
         console.info('[Passkey] Tauri detected — using browser bridge for registration');
-        const b64Challenge = btoa(JSON.stringify(beginData.challenge));
-        const credStr = await invoke<string>("collect_passkey", { challenge_b64: b64Challenge, mode: "register" });
+        const b64Challenge = encodeURIComponent(btoa(JSON.stringify(beginData.challenge)));
+        const credStr = await invoke<string>("collect_passkey", { challengeB64: b64Challenge, mode: "register" });
         credential = JSON.parse(credStr);
         if (credential.error) throw new Error(credential.error);
     } else {
-        credential = await startRegistration({ optionsJSON: beginData.challenge });
+        credential = await startRegistration({ optionsJSON: beginData.challenge.publicKey || beginData.challenge });
     }
 
     return requestJson('/auth/register-passkey/complete', {
@@ -115,12 +136,12 @@ export async function loginPasskey(email: string) {
     let credential;
     if (isTauri()) {
         console.info('[Passkey] Tauri detected — using browser bridge for authentication');
-        const b64Challenge = btoa(JSON.stringify(beginData.challenge));
-        const credStr = await invoke<string>("collect_passkey", { challenge_b64: b64Challenge, mode: "login" });
+        const b64Challenge = encodeURIComponent(btoa(JSON.stringify(beginData.challenge)));
+        const credStr = await invoke<string>("collect_passkey", { challengeB64: b64Challenge, mode: "login" });
         credential = JSON.parse(credStr);
         if (credential.error) throw new Error(credential.error);
     } else {
-        credential = await startAuthentication({ optionsJSON: beginData.challenge });
+        credential = await startAuthentication({ optionsJSON: beginData.challenge.publicKey || beginData.challenge });
     }
 
     return requestJson('/auth/login/complete', {

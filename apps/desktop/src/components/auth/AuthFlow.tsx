@@ -5,6 +5,7 @@ import * as crypto from "../../lib/crypto";
 import * as vault from "../../lib/vault";
 import OnboardingScreen from "./OnboardingScreen";
 import { useToast } from "../ui/Toast";
+import { AppError, handleError } from "../../lib/errors";
 
 type View = "HOME" | "WAITING" | "REGISTER" | "LOADING";
 export default function AuthFlow({
@@ -94,32 +95,35 @@ export default function AuthFlow({
     setIsMaintenance(false);
     try {
       const res = await api.requestAccess(email);
-      if (res.error === "MAINTENANCE_MODE") {
-        setIsMaintenance(true);
-        return;
-      }
-      if (res.error) throw new Error(res.error);
       setUserId(res.user_id);
       setAccessCode(res.access_code || "");
       if (res.status === "active") {
         // Try admin bootstrap first when a setup token is configured.
         if (api.canAttemptAdminBootstrap()) {
+          let bootstrapRes = null;
           try {
-            const bootstrapRes = await api.adminBootstrap(email);
-            if (bootstrapRes.token) {
-              setView("LOADING");
-              await completeSetup(bootstrapRes.token, res.user_id, bootstrapRes.org_id, "ADMIN", bootstrapRes.username, bootstrapRes.department);
-              return;
-            }          } catch {
-            // Not the configured admin or bootstrap is unavailable — continue with passkey login.
+            bootstrapRes = await api.adminBootstrap(email);
+          } catch (e) {
+            // Not the configured admin or bootstrap is unavailable
+          }
+          
+          if (bootstrapRes && bootstrapRes.token) {
+            setView("LOADING");
+            await completeSetup(bootstrapRes.token, res.user_id, bootstrapRes.org_id, "ADMIN", bootstrapRes.username, bootstrapRes.department);
+            return;
           }
         }
         await handleLogin(email, res.user_id);
       } else {
         setView("WAITING");
       }
-    } catch (err: any) {
-      addToast(err.message || "We couldn't reach your workspace. Check the server connection and API base URL.", "error");
+    } catch (err) {
+      const appErr = handleError(err, "handleRequestAccess");
+      if (appErr.message === "MAINTENANCE_MODE") {
+          setIsMaintenance(true);
+      } else {
+          addToast(appErr.getFriendlyMessage(), "error");
+      }
     }
   };
 
@@ -127,11 +131,6 @@ export default function AuthFlow({
     setIsMaintenance(false);
     try {
       const res = await api.loginPasskey(loginEmail);
-      if (res.error === "MAINTENANCE_MODE") {
-        setIsMaintenance(true);
-        return;
-      }
-      if (res.error) throw new Error(res.error);
       api.setToken(res.token); setUserId(uid);
       await invoke("set_session_jwt", { jwt: res.token }).catch(() => {});
       
@@ -140,17 +139,24 @@ export default function AuthFlow({
       const savedDevice = await vault.getDeviceId().catch(() => null);
       if (savedDevice) myDeviceId.current = savedDevice;
 
-      if (!localKeys.current) setView("REGISTER"); else {
+      if (!localKeys.current) {
+        setView("LOADING");
+        const claims = decodeJwtClaims(res.token);
+        await completeSetup(res.token, uid, res.org_id, (claims as any)?.role || "USER", res.username, res.department);
+      } else {
         saveAccount(loginEmail);
         const claims = decodeJwtClaims(api.getToken());
         onAuthenticated(uid, res.org_id, loginEmail, myDeviceId.current!, localKeys.current, (claims as any)?.role || "USER", res.username, res.department);
       }
-    } catch (err: any) {
+    } catch (err) {
+      const appErr = handleError(err, "handleLogin");
       // "No passkeys found" is expected for first-time users — don't show as error
-      if (err.message?.includes("No passkeys found") && uid) {
+      if (appErr.message?.includes("No passkeys found") && uid) {
         setView("REGISTER");
+      } else if (appErr.message === "MAINTENANCE_MODE") {
+        setIsMaintenance(true);
       } else {
-        addToast("Login failed: " + err.message, "error");
+        addToast(appErr.getFriendlyMessage(), "error");
       }
     }
   };
@@ -173,7 +179,8 @@ export default function AuthFlow({
       }));
       await vault.storeOtpkBatch(otpkPairs);
     } catch (err) {
-      console.error("Local vault save failed", err);
+      const appErr = handleError(err, "completeSetup:vault");
+      throw new Error(`Failed to save keys to local secure vault: ${appErr.message}`);
     }
 
     setLoadingStep("Syncing public keys with relay server...");
@@ -187,7 +194,6 @@ export default function AuthFlow({
         signed_pre_key_sig: keys.signed_pre_key_signature,
         one_time_pre_keys: keys.one_time_pre_keys.map((k: any) => ({ key_id: k.key_id, public_key: k.public_key })),
       });
-      if (uploadRes.error) throw new Error(uploadRes.error);
 
       myDeviceId.current = uploadRes.device_id;
       try { await vault.saveDeviceId(uploadRes.device_id); } catch {}
@@ -195,9 +201,9 @@ export default function AuthFlow({
       saveAccount(email);
       // Call onAuthenticated directly with fresh values (React setState is async)
       onAuthenticated(uid, orgIdVal, email, uploadRes.device_id, keys, roleVal, username, department);
-    } catch (err: any) {
-      console.error("Complete setup failed at upload step", err);
-      throw new Error(`Sync failed: ${err.message || 'Server rejected keys'}`);
+    } catch (err) {
+      const appErr = handleError(err, "completeSetup:api");
+      throw new Error(`Sync failed: ${appErr.message}`);
     }
   };
 
@@ -207,30 +213,30 @@ export default function AuthFlow({
     try {
       // Try admin bootstrap first when a setup token is configured.
       if (api.canAttemptAdminBootstrap()) {
+        let bootstrapRes = null;
         try {
-          const bootstrapRes = await api.adminBootstrap(email);
-          if (bootstrapRes.token) {
-            await completeSetup(bootstrapRes.token, userId, bootstrapRes.org_id, "ADMIN", bootstrapRes.username, bootstrapRes.department);
-            return;
-          }
+          bootstrapRes = await api.adminBootstrap(email);
         } catch {
-          // Not the configured admin or bootstrap is unavailable — continue with normal flow.
+          // Not the configured admin or bootstrap is unavailable
+        }
+
+        if (bootstrapRes && bootstrapRes.token) {
+          await completeSetup(bootstrapRes.token, userId, bootstrapRes.org_id, "ADMIN", bootstrapRes.username, bootstrapRes.department);
+          return;
         }
       }
 
       // Normal WebAuthn flow for non-admin users
-      const regRes = await api.registerPasskey(userId);
-      if (regRes.error) throw new Error(regRes.error);
-
+      await api.registerPasskey(userId);
       const loginRes = await api.loginPasskey(email);
-      if (loginRes.error) throw new Error(loginRes.error);
 
       const claims = decodeJwtClaims(loginRes.token);
       await completeSetup(loginRes.token, userId, loginRes.org_id, (claims as any)?.role || "USER", loginRes.username, loginRes.department);
-    } catch (err: any) {
-      console.error("Register/Login flow failed:", err);
+    } catch (err) {
+      const appErr = handleError(err, "handleRegisterPasskey");
+      console.error("Register/Login flow failed:", appErr);
       setView("REGISTER");
-      addToast(err.message || "Final setup failed. Check your network or hardware key.", "error");
+      addToast(appErr.getFriendlyMessage(), "error");
     }
   };
 

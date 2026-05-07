@@ -554,7 +554,7 @@ fn collect_passkey(_app: tauri::AppHandle, challenge_b64: String, mode: String) 
             let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
             let mut buf = [0; 16384];
             if let Ok(bytes_read) = stream.read(&mut buf) {
-                let request = String::from_utf8_lossy(&buf[..bytes_read]);
+                let request = String::from_utf8_lossy(&buf[..bytes_read]).to_string();
                 
                 if request.starts_with("OPTIONS") {
                     let response = "HTTP/1.1 200 OK\r\n\
@@ -567,7 +567,26 @@ fn collect_passkey(_app: tauri::AppHandle, challenge_b64: String, mode: String) 
                 }
 
                 if let Some(body_idx) = request.find("\r\n\r\n") {
-                    let body = request[body_idx + 4..].trim_end_matches('\0');
+                    let mut body = request[body_idx + 4..].trim_matches('\0').to_string();
+                    
+                    let mut content_length = 0;
+                    for line in request[..body_idx].split("\r\n") {
+                        if line.to_lowercase().starts_with("content-length:") {
+                            if let Ok(len) = line[15..].trim().parse::<usize>() {
+                                content_length = len;
+                            }
+                        }
+                    }
+
+                    while body.len() < content_length {
+                        let mut more_buf = [0; 16384];
+                        match stream.read(&mut more_buf) {
+                            Ok(0) => break,
+                            Ok(n) => body.push_str(&String::from_utf8_lossy(&more_buf[..n])),
+                            Err(_) => break,
+                        }
+                    }
+
                     eprintln!("[collect_passkey] Received credential from browser ({} bytes)", body.len());
                     let response = "HTTP/1.1 200 OK\r\n\
                                   Access-Control-Allow-Origin: *\r\n\
@@ -575,7 +594,7 @@ fn collect_passkey(_app: tauri::AppHandle, challenge_b64: String, mode: String) 
                                   \r\n\
                                   {\"status\":\"ok\"}";
                     let _ = stream.write_all(response.as_bytes());
-                    return Ok(body.to_string());
+                    return Ok(body);
                 }
             }
         }
