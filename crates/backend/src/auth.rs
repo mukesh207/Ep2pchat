@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::Row;
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 use uuid::Uuid;
@@ -201,9 +200,11 @@ async fn admin_bootstrap(
         return Err(AppError::Forbidden("User is not an active admin".into()));
     }
 
-    if state.admin_bootstrap_consumed.swap(true, Ordering::AcqRel) {
-        return Err(AppError::Forbidden("Admin bootstrap has already been used".into()));
-    }
+    // Invalidate any previous bootstrap sessions for this admin to enforce single active session.
+    let _ = sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&state.db)
+        .await;
 
     let jti = Uuid::new_v4();
     let expiration_dt = chrono::Utc::now()
@@ -228,7 +229,6 @@ async fn admin_bootstrap(
         .await;
 
     if let Err(e) = session_store {
-        state.admin_bootstrap_consumed.store(false, Ordering::Release);
         return Err(e.into());
     }
 
@@ -239,7 +239,6 @@ async fn admin_bootstrap(
     ) {
         Ok(t) => t,
         Err(e) => {
-            state.admin_bootstrap_consumed.store(false, Ordering::Release);
             return Err(AppError::Internal(format!("Failed to create token: {}", e)));
         }
     };

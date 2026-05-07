@@ -1,0 +1,19 @@
+# Pre-built image: uses the binary compiled locally (avoids OOM during Docker build on t3.micro)
+FROM debian:bookworm-slim
+
+# Install runtime dependencies (libsodium, SSL certs)
+RUN apt-get update && apt-get install -y libsodium23 ca-certificates && rm -rf /var/lib/apt/lists/*
+
+# Copy the pre-built binary
+COPY target/release/backend /usr/local/bin/trustline-backend
+# Copy migrations
+COPY migrations /migrations
+
+# Expose the API/WebSocket port
+EXPOSE 3000
+
+ENV RUST_LOG=info
+ENV PORT=3000
+
+# Run the binary
+CMD ["trustline-backend"]

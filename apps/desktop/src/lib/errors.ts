@@ -28,9 +28,9 @@ export class AppError extends Error {
         this.details = options?.details;
         this.timestamp = new Date();
 
-        // Ensure stack trace is captured correctly in modern JS engines
-        if (Error.captureStackTrace) {
-            Error.captureStackTrace(this, AppError);
+        // Ensure stack trace is captured correctly in modern JS engines (V8/Node)
+        if ((Error as any).captureStackTrace) {
+            (Error as any).captureStackTrace(this, AppError);
         }
     }
 

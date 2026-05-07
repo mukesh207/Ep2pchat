@@ -14,7 +14,10 @@ COPY apps ./apps
 COPY migrations ./migrations
 
 # Build the backend crate for release
-RUN CARGO_BUILD_JOBS=1 cargo build --release -p backend
+# CARGO_BUILD_JOBS=1 limits parallelism to reduce OOM on small EC2 instances (t3.micro)
+# RUSTFLAGS=-C link-arg=-fuse-ld=gold uses the gold linker which uses less peak memory than lld
+RUN apt-get install -y binutils-gold && \
+    CARGO_BUILD_JOBS=1 RUSTFLAGS="-C link-arg=-fuse-ld=gold" cargo build --release -p backend
 
 # ---------------------------------------------------
 # Final tiny production image

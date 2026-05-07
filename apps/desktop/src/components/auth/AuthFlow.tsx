@@ -5,7 +5,7 @@ import * as crypto from "../../lib/crypto";
 import * as vault from "../../lib/vault";
 import OnboardingScreen from "./OnboardingScreen";
 import { useToast } from "../ui/Toast";
-import { AppError, handleError } from "../../lib/errors";
+import { handleError } from "../../lib/errors";
 
 type View = "HOME" | "WAITING" | "REGISTER" | "LOADING";
 export default function AuthFlow({
@@ -103,13 +103,28 @@ export default function AuthFlow({
           let bootstrapRes = null;
           try {
             bootstrapRes = await api.adminBootstrap(email);
-          } catch (e) {
-            // Not the configured admin or bootstrap is unavailable
+          } catch {
+            // Not the configured admin or bootstrap is unavailable — fall through to passkey
           }
-          
+
           if (bootstrapRes && bootstrapRes.token) {
             setView("LOADING");
-            await completeSetup(bootstrapRes.token, res.user_id, bootstrapRes.org_id, "ADMIN", bootstrapRes.username, bootstrapRes.department);
+            // Check if this admin already has keys in the vault (returning admin session)
+            const savedKeys = await vault.getLocalKeys().catch(() => null);
+            const savedDevice = await vault.getDeviceId().catch(() => null);
+            if (savedKeys && savedDevice) {
+              // Returning admin: restore the session directly without re-generating keys
+              setLoadingStep("Restoring secure session...");
+              api.setToken(bootstrapRes.token);
+              await invoke("set_session_jwt", { jwt: bootstrapRes.token }).catch(() => {});
+              localKeys.current = savedKeys;
+              myDeviceId.current = savedDevice;
+              saveAccount(email);
+              onAuthenticated(res.user_id, bootstrapRes.org_id, email, savedDevice, savedKeys, "ADMIN", bootstrapRes.username, bootstrapRes.department);
+            } else {
+              // First-time admin: run full key generation and device registration
+              await completeSetup(bootstrapRes.token, res.user_id, bootstrapRes.org_id, "ADMIN", bootstrapRes.username, bootstrapRes.department);
+            }
             return;
           }
         }
@@ -221,7 +236,20 @@ export default function AuthFlow({
         }
 
         if (bootstrapRes && bootstrapRes.token) {
-          await completeSetup(bootstrapRes.token, userId, bootstrapRes.org_id, "ADMIN", bootstrapRes.username, bootstrapRes.department);
+          // Check if this admin already has keys in the vault (returning admin session)
+          const savedKeys = await vault.getLocalKeys().catch(() => null);
+          const savedDevice = await vault.getDeviceId().catch(() => null);
+          if (savedKeys && savedDevice) {
+            setLoadingStep("Restoring secure session...");
+            api.setToken(bootstrapRes.token);
+            await invoke("set_session_jwt", { jwt: bootstrapRes.token }).catch(() => {});
+            localKeys.current = savedKeys;
+            myDeviceId.current = savedDevice;
+            saveAccount(email);
+            onAuthenticated(userId, bootstrapRes.org_id, email, savedDevice, savedKeys, "ADMIN", bootstrapRes.username, bootstrapRes.department);
+          } else {
+            await completeSetup(bootstrapRes.token, userId, bootstrapRes.org_id, "ADMIN", bootstrapRes.username, bootstrapRes.department);
+          }
           return;
         }
       }
