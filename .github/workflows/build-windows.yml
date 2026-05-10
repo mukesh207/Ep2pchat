@@ -45,4 +45,4 @@ jobs:
           releaseBody: "Trustline automated Windows build."
           releaseDraft: true
           prerelease: false
-          args: --target x86_64-pc-windows-msvc --no-build
+          args: --target x86_64-pc-windows-msvc
