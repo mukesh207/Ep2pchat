@@ -1,6 +1,6 @@
 import { Activity, Shield, Users, Cpu, Terminal, Hash, HardDrive, Signal, AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import * as api from "../../../infrastructure/api";
 
 interface CommandCenterProps {
