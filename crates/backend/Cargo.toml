@@ -12,12 +12,16 @@ tower = { version = "0.5", features = ["timeout"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "request-id", "timeout"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-opentelemetry = "0.28"
+opentelemetry = "0.27"
+opentelemetry-otlp = { version = "0.27", features = ["tonic"] }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-semantic-conventions = "0.27"
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "migrate"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 dotenvy = "0.15"
-webauthn-rs = { version = "0.5.4", features = ["danger-allow-state-serialisation"] }
-jsonwebtoken = { version = "10.3.0", default-features = false, features = ["rust_crypto"] }
 base64 = "0.22.1"
+jsonwebtoken = { version = "10.3.0", default-features = false, features = ["rust_crypto"] }
 url = "2.5.8"
 chrono = { version = "0.4.44", features = ["serde"] }
 crypto_core = { version = "0.1.0", path = "../crypto_core" }
@@ -27,3 +31,4 @@ async-trait = "0.1"
 dashmap = "6"
 tokio-stream = "0.1"
 sha2 = "0.10"
+thiserror = "2"

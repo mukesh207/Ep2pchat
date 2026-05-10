@@ -1,4 +1,6 @@
 import React, { useCallback, useState, createContext, useContext, useRef, useEffect } from "react";
+import { AlertTriangle, Info, Zap, X } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -58,7 +60,7 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
   // Auto-focus the confirm button
   useEffect(() => {
     if (pending && dialogRef.current) {
-      const btn = dialogRef.current.querySelector<HTMLButtonElement>(".confirm-dialog-confirm-btn");
+      const btn = dialogRef.current.querySelector<HTMLButtonElement>(".btn-tactical-primary");
       btn?.focus();
     }
   }, [pending]);
@@ -68,38 +70,72 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
   return (
     <ConfirmContext.Provider value={{ confirm }}>
       {children}
-      {pending && (
-        <>
-          <div className="confirm-dialog-backdrop" onClick={() => handleResult(false)} />
-          <div className="confirm-dialog" ref={dialogRef} role="alertdialog" aria-modal="true">
-            <div className={`confirm-dialog-header confirm-dialog-${variant}`}>
-              <span className="confirm-dialog-icon">
-                {variant === "danger" && "⚠"}
-                {variant === "warn" && "⚡"}
-                {variant === "info" && "ℹ"}
-              </span>
-              <span className="confirm-dialog-title">{pending.options.title}</span>
-            </div>
-            <div className="confirm-dialog-body">
-              <p className="confirm-dialog-message">{pending.options.message}</p>
-            </div>
-            <div className="confirm-dialog-actions">
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={() => handleResult(false)}
-              >
-                {pending.options.cancelLabel ?? "Cancel"}
-              </button>
-              <button
-                className={`btn btn-sm confirm-dialog-confirm-btn ${variant === "danger" ? "btn-danger" : "btn-primary"}`}
-                onClick={() => handleResult(true)}
-              >
-                {pending.options.confirmLabel ?? "Confirm"}
-              </button>
-            </div>
+      <AnimatePresence>
+        {pending && (
+          <div className="modal-overlay-tactical" onClick={() => handleResult(false)}>
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              className="modal-content-tactical max-w-[440px]" 
+              ref={dialogRef} 
+              role="alertdialog" 
+              aria-modal="true"
+              onClick={e => e.stopPropagation()}
+            >
+              <header className={`h-14 border-b border-border-tactical flex items-center justify-between px-6 bg-background-secondary/80 backdrop-blur-md`}>
+                <div className="flex items-center gap-3">
+                  <div className={`h-2 w-2 rounded-full ${
+                    variant === "danger" ? "bg-accent-red animate-pulse" : 
+                    variant === "warn" ? "bg-accent-amber animate-pulse" : 
+                    "bg-accent-cyan animate-pulse"
+                  }`} />
+                  <span className="text-[13px] font-semibold text-text-primary">Confirmation Required</span>
+                </div>
+                <button className="h-6 w-6 rounded flex items-center justify-center text-text-muted hover:text-accent-red transition-all" onClick={() => handleResult(false)}><X size={16} /></button>
+              </header>
+
+
+              <div className="p-8 space-y-6">
+                <div className="flex items-start gap-5">
+                  <div className={`h-12 w-12 rounded-xl flex items-center justify-center shrink-0 shadow-lg ${
+                    variant === "danger" ? "bg-accent-red/10 text-accent-red border border-accent-red/20" : 
+                    variant === "warn" ? "bg-accent-amber/10 text-accent-amber border border-accent-amber/20" : 
+                    "bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/20"
+                  }`}>
+                    {variant === "danger" && <AlertTriangle size={24} />}
+                    {variant === "warn" && <Zap size={24} />}
+                    {variant === "info" && <Info size={24} />}
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="text-lg font-bold text-text-primary tracking-tight leading-tight">{pending.options.title}</h3>
+                    <p className="text-[14px] text-text-secondary leading-relaxed font-medium">{pending.options.message}</p>
+                  </div>
+                </div>
+              </div>
+
+
+              <footer className="p-6 border-t border-border-tactical bg-background-secondary/80 flex gap-3">
+                <button
+                  className="btn-tactical btn-tactical-secondary flex-1 font-semibold"
+                  onClick={() => handleResult(false)}
+                >
+                  {pending.options.cancelLabel ?? "Abort"}
+                </button>
+                <button
+                  className={`btn-tactical flex-1 font-semibold ${
+                    variant === "danger" ? "bg-accent-red text-white border-transparent" : 
+                    "btn-tactical-primary"
+                  }`}
+                  onClick={() => handleResult(true)}
+                >
+                  {pending.options.confirmLabel ?? "Confirm"}
+                </button>
+              </footer>
+            </motion.div>
           </div>
-        </>
-      )}
+        )}
+      </AnimatePresence>
     </ConfirmContext.Provider>
   );
 }

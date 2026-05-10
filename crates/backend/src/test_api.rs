@@ -45,11 +45,7 @@ pub async fn reset(
         .execute(&mut *tx)
         .await
         .map_err(internal_error)?;
-    sqlx::query("DELETE FROM passkeys")
-        .execute(&mut *tx)
-        .await
-        .map_err(internal_error)?;
-    sqlx::query("DELETE FROM webauthn_sessions")
+    sqlx::query("DELETE FROM auth_challenges")
         .execute(&mut *tx)
         .await
         .map_err(internal_error)?;
@@ -228,15 +224,16 @@ async fn insert_user(
     status: &str,
     is_admin: bool,
 ) -> Result<(), (StatusCode, Json<Value>)> {
+    let role = if is_admin { "ADMIN" } else { "USER" };
     sqlx::query(
-        "INSERT INTO users (id, org_id, email, username, status, is_admin) VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO users (id, org_id, email, username, status, role) VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(user_id)
     .bind(org_id)
     .bind(email)
     .bind(username)
     .bind(status)
-    .bind(is_admin)
+    .bind(role)
     .execute(&mut **tx)
     .await
     .map_err(internal_error)?;

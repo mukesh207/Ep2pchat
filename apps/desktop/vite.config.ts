@@ -48,14 +48,17 @@ export default defineConfig(({ mode }) => {
         "/api": {
           target: backendOrigin,
           changeOrigin: true,
+          secure: false,
         },
         "/health": {
           target: backendOrigin,
           changeOrigin: true,
+          secure: false,
         },
         "/ws": {
           target: backendWsOrigin,
           ws: true,
+          secure: false,
         },
       },
     },

@@ -35,12 +35,16 @@ async fn create_test_token(user_id: Uuid, org_id: Uuid, is_admin: bool, pool: &s
     };
 
     // Insert session into real DB
-    let _ = sqlx::query("INSERT INTO sessions (jti, user_id, expires_at) VALUES ($1, $2, $3)")
+    let res = sqlx::query("INSERT INTO sessions (jti, user_id, expires_at) VALUES ($1, $2, $3)")
         .bind(jti)
         .bind(user_id)
         .bind(expiration_dt)
         .execute(pool)
         .await;
+
+    if let Err(e) = res {
+        eprintln!("Failed to insert session in create_test_token: {}", e);
+    }
 
     encode(
         &Header::default(),
@@ -54,15 +58,6 @@ async fn mock_app_state() -> AppState {
         db: PgPoolOptions::new()
             .connect_lazy("postgres://localhost/mock")
             .unwrap(),
-        webauthn: Arc::new(
-            webauthn_rs::WebauthnBuilder::new(
-                "localhost",
-                &url::Url::parse("http://localhost").unwrap(),
-            )
-            .unwrap()
-            .build()
-            .unwrap(),
-        ),
         ws: WsState::new(),
         nats: NatsService::disabled(),
         jwt_secret: Arc::new("super_secret_fallback_key_for_dev".to_string()),
@@ -86,17 +81,8 @@ async fn integration_app_state() -> Option<AppState> {
         return None;
     }
 
-    let webauthn = webauthn_rs::WebauthnBuilder::new(
-        "localhost",
-        &url::Url::parse("http://localhost").ok()?,
-    )
-    .ok()?
-    .build()
-    .ok()?;
-
     Some(AppState {
         db: pool,
-        webauthn: Arc::new(webauthn),
         ws: WsState::new(),
         nats: NatsService::disabled(),
         jwt_secret: Arc::new("super_secret_fallback_key_for_dev".to_string()),
@@ -195,6 +181,7 @@ async fn test_admin_route_forbidden_for_non_admin() {
 
     let user_id = Uuid::new_v4();
     let org_id = Uuid::new_v4();
+    seed_org_user_device(&state, org_id, user_id, "nonadmin@test.com", Uuid::new_v4()).await;
     let token = create_test_token(user_id, org_id, false, &state.db).await;
 
     let app = Router::new()

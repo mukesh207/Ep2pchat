@@ -166,37 +166,42 @@ pub async fn get_user_keys_internal(
     .await
     .map_err(|e| e.to_string())?;
 
+    if devices.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let device_ids: Vec<Uuid> = devices.iter().map(|d| d.get("id")).collect();
+
+    // Consume one OTPK per device in a single query
+    let opks = crate::db::with_rls_context(db, org_id, |tx| Box::pin(async move {
+        sqlx::query(
+            "DELETE FROM one_time_pre_keys
+             WHERE id IN (
+                SELECT id FROM (
+                    SELECT id, row_number() OVER (PARTITION BY device_id ORDER BY created_at) as rn
+                    FROM one_time_pre_keys
+                    WHERE device_id = ANY($1)
+                ) sub
+                WHERE rn = 1
+             )
+             RETURNING device_id, key_id, public_key"
+        )
+        .bind(&device_ids)
+        .fetch_all(&mut *tx)
+        .await
+    }))
+    .await
+    .map_err(|e| e.to_string())?;
+
     let mut bundles = Vec::new();
     for device_row in devices {
         let device_id: Uuid = device_row.get("id");
-
-        let result = crate::db::with_rls_context(db, org_id, |tx| {
-            Box::pin(async move {
-                let opk_row = sqlx::query(
-                    "DELETE FROM one_time_pre_keys
-                 WHERE id = (SELECT id FROM one_time_pre_keys WHERE device_id = $1 LIMIT 1)
-                 RETURNING id, key_id, public_key",
-                )
-                .bind(device_id)
-                .fetch_optional(&mut *tx)
-                .await?;
-                Ok(opk_row)
-            })
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-
-        let opk = result.map(|row| OneTimeKeyPayload {
+        
+        let opk = opks.iter().find(|o| o.get::<Uuid, _>("device_id") == device_id).map(|row| OneTimeKeyPayload {
             key_id: row.get::<i32, _>("key_id"),
             public_key: base64::engine::general_purpose::STANDARD
                 .encode(row.get::<Vec<u8>, _>("public_key")),
         });
-
-        if opk.is_none() {
-            // "Return error if zero rows (already consumed)" logic applied partially if required
-            // For now we allow falling back, but track depletion
-            tracing::warn!("OPK exhausted for device {}", device_id);
-        }
 
         bundles.push(DeviceBundle {
             device_id,

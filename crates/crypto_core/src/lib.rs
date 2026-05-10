@@ -1,14 +1,19 @@
 pub mod ratchet;
 pub use ratchet::{DhRatchetKeyPair, MessageHeader, RatchetError, RatchetSession};
 
-use sodiumoxide::crypto::aead::chacha20poly1305_ietf as aead;
-use sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::{gen_keypair, PublicKey, SecretKey};
+use sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::{PublicKey as BoxPublicKey, SecretKey as BoxSecretKey};
+pub use sodiumoxide::crypto::sign::ed25519::{
+    gen_keypair as gen_sign_keypair, PublicKey as SignPublicKey, SecretKey as SignSecretKey,
+};
+
+pub fn random_bytes(count: usize) -> Vec<u8> {
+    sodiumoxide::randombytes::randombytes(count)
+}
 
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use sodiumoxide::crypto::scalarmult::curve25519::{scalarmult, GroupElement, Scalar};
-use sodiumoxide::crypto::sign::ed25519::SecretKey as SignSecretKey;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub enum CryptoError {
@@ -16,6 +21,7 @@ pub enum CryptoError {
     DecryptionFailed,
     InvalidKey,
     InvalidNonce,
+    SigningFailed,
 }
 
 impl std::fmt::Display for CryptoError {
@@ -25,6 +31,7 @@ impl std::fmt::Display for CryptoError {
             CryptoError::DecryptionFailed => write!(f, "Decryption failed (invalid key or tampered ciphertext)"),
             CryptoError::InvalidKey => write!(f, "Invalid key length"),
             CryptoError::InvalidNonce => write!(f, "Invalid nonce length"),
+            CryptoError::SigningFailed => write!(f, "Signing failed"),
         }
     }
 }
@@ -63,24 +70,49 @@ pub fn init() -> Result<(), CryptoError> {
     sodiumoxide::init().map_err(|_| CryptoError::InitFailed)
 }
 
-pub fn generate_identity_keypair() -> (PublicKey, SecretKey) {
-    gen_keypair()
+/// Generates an Ed25519 keypair for identity.
+/// This key is used for signing (authentication) and can be converted
+/// to Curve25519 for X3DH encryption.
+pub fn generate_identity_keypair() -> (SignPublicKey, SignSecretKey) {
+    gen_sign_keypair()
 }
 
-pub fn generate_signed_pre_key(identity_secret: &SignSecretKey) -> (PublicKey, SecretKey, Vec<u8>) {
-    let (pk, sk) = gen_keypair();
+pub fn generate_signed_pre_key(identity_secret: &SignSecretKey) -> (BoxPublicKey, BoxSecretKey, Vec<u8>) {
+    let (pk, sk) = sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::gen_keypair();
     // Signature of the public key using the identity signing key
     let sig = sodiumoxide::crypto::sign::ed25519::sign_detached(pk.as_ref(), identity_secret);
     (pk, sk, sig.as_ref().to_vec())
 }
 
-pub fn generate_one_time_pre_keys(count: usize) -> Vec<(u32, PublicKey, SecretKey)> {
+pub fn generate_one_time_pre_keys(count: usize) -> Vec<(u32, BoxPublicKey, BoxSecretKey)> {
     let mut keys = Vec::with_capacity(count);
     for i in 0..count {
-        let (pk, sk) = gen_keypair();
+        let (pk, sk) = sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::gen_keypair();
         keys.push((i as u32, pk, sk));
     }
     keys
+}
+
+/// Converts an Ed25519 public key to a Curve25519 public key.
+pub fn ed25519_pk_to_curve25519(pk: &SignPublicKey) -> Result<BoxPublicKey, CryptoError> {
+    sodiumoxide::crypto::sign::ed25519::to_curve25519_pk(pk).map_err(|_| CryptoError::InvalidKey)
+}
+
+/// Converts an Ed25519 secret key to a Curve25519 secret key.
+pub fn ed25519_sk_to_curve25519(sk: &SignSecretKey) -> Result<BoxSecretKey, CryptoError> {
+    sodiumoxide::crypto::sign::ed25519::to_curve25519_sk(sk).map_err(|_| CryptoError::InvalidKey)
+}
+
+pub fn sign_detached(message: &[u8], sk: &SignSecretKey) -> Vec<u8> {
+    sodiumoxide::crypto::sign::ed25519::sign_detached(message, sk).as_ref().to_vec()
+}
+
+pub fn verify_detached(signature: &[u8], message: &[u8], pk: &SignPublicKey) -> bool {
+    if let Ok(sig) = sodiumoxide::crypto::sign::ed25519::Signature::from_bytes(signature) {
+        sodiumoxide::crypto::sign::ed25519::verify_detached(&sig, message, pk)
+    } else {
+        false
+    }
 }
 
 /// A single generated OTPK — public key goes to the server via the upload
@@ -100,7 +132,7 @@ pub fn generate_otpk_batch(count: usize) -> Vec<OtpkPair> {
 
     (0..count)
         .map(|_| {
-            let (pk, sk) = gen_keypair();
+            let (pk, sk) = sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::gen_keypair();
             let mut public_key = [0u8; 32];
             let mut private_key = [0u8; 32];
             public_key.copy_from_slice(pk.as_ref());
@@ -114,7 +146,7 @@ pub fn generate_otpk_batch(count: usize) -> Vec<OtpkPair> {
         .collect()
 }
 
-fn do_dh(sk: &SecretKey, pk: &PublicKey) -> Result<Vec<u8>, CryptoError> {
+fn do_dh(sk: &BoxSecretKey, pk: &BoxPublicKey) -> Result<Vec<u8>, CryptoError> {
     let scalar = Scalar::from_slice(sk.as_ref()).ok_or(CryptoError::InvalidKey)?;
     let group_element = GroupElement::from_slice(pk.as_ref()).ok_or(CryptoError::InvalidKey)?;
     let out = scalarmult(&scalar, &group_element).map_err(|_| CryptoError::DecryptionFailed)?;
@@ -122,11 +154,11 @@ fn do_dh(sk: &SecretKey, pk: &PublicKey) -> Result<Vec<u8>, CryptoError> {
 }
 
 pub fn x3dh_sender(
-    alice_ik_sk: &SecretKey,
-    alice_ek_sk: &SecretKey,
-    bob_ik_pk: &PublicKey,
-    bob_spk_pk: &PublicKey,
-    bob_opk_pk: Option<&PublicKey>,
+    alice_ik_sk: &BoxSecretKey,
+    alice_ek_sk: &BoxSecretKey,
+    bob_ik_pk: &BoxPublicKey,
+    bob_spk_pk: &BoxPublicKey,
+    bob_opk_pk: Option<&BoxPublicKey>,
 ) -> Result<Vec<u8>, CryptoError> {
     let dh1 = do_dh(alice_ik_sk, bob_spk_pk)?;
     let dh2 = do_dh(alice_ek_sk, bob_ik_pk)?;
@@ -152,11 +184,11 @@ pub fn x3dh_sender(
 }
 
 pub fn x3dh_receiver(
-    bob_ik_sk: &SecretKey,
-    bob_spk_sk: &SecretKey,
-    bob_opk_sk: Option<&SecretKey>,
-    alice_ik_pk: &PublicKey,
-    alice_ek_pk: &PublicKey,
+    bob_ik_sk: &BoxSecretKey,
+    bob_spk_sk: &BoxSecretKey,
+    bob_opk_sk: Option<&BoxSecretKey>,
+    alice_ik_pk: &BoxPublicKey,
+    alice_ek_pk: &BoxPublicKey,
 ) -> Result<Vec<u8>, CryptoError> {
     let dh1 = do_dh(bob_spk_sk, alice_ik_pk)?;
     let dh2 = do_dh(bob_ik_sk, alice_ek_pk)?;
@@ -196,6 +228,8 @@ pub fn decrypt_symmetric(ciphertext: &[u8], key: &[u8], nonce: &[u8]) -> Result<
     secretbox::open(ciphertext, &nonce, &key).map_err(|_| CryptoError::DecryptionFailed)
 }
 
+use sodiumoxide::crypto::aead::chacha20poly1305_ietf as aead;
+
 pub fn encrypt_message(plaintext: &[u8], key: &[u8]) -> Result<(Vec<u8>, Vec<u8>), CryptoError> {
     let nonce_bytes = sodiumoxide::randombytes::randombytes(aead::NONCEBYTES);
     let nonce = aead::Nonce::from_slice(&nonce_bytes).ok_or(CryptoError::InvalidNonce)?;
@@ -216,26 +250,24 @@ mod tests {
 
     #[test]
     fn test_x3dh_and_encryption() {
-        use sodiumoxide::crypto::sign::ed25519::gen_keypair as gen_sign_keypair;
-
         init().unwrap();
 
         // 1. Bob's Key Generation
-        let (_bob_ik_pk, bob_ik_sk) = generate_identity_keypair();
-        let bob_ik_pk = PublicKey::from_slice(_bob_ik_pk.as_ref()).unwrap();
+        let (bob_ik_pk_sign, bob_ik_sk_sign) = generate_identity_keypair();
+        let bob_ik_pk = ed25519_pk_to_curve25519(&bob_ik_pk_sign).unwrap();
+        let bob_ik_sk = ed25519_sk_to_curve25519(&bob_ik_sk_sign).unwrap();
 
-        let (_bob_sign_pk, bob_sign_sk) = gen_sign_keypair();
-        let (bob_spk_pk, bob_spk_sk, _sig) = generate_signed_pre_key(&bob_sign_sk);
+        let (bob_spk_pk, bob_spk_sk, _sig) = generate_signed_pre_key(&bob_ik_sk_sign);
 
         let opks = generate_one_time_pre_keys(1);
         let (_opk_id, bob_opk_pk, bob_opk_sk) = &opks[0];
 
         // 2. Alice's Side
-        let (_alice_ik_pk, alice_ik_sk) = generate_identity_keypair();
-        let alice_ik_pk = PublicKey::from_slice(_alice_ik_pk.as_ref()).unwrap();
+        let (alice_ik_pk_sign, alice_ik_sk_sign) = generate_identity_keypair();
+        let _alice_ik_pk = ed25519_pk_to_curve25519(&alice_ik_pk_sign).unwrap();
+        let alice_ik_sk = ed25519_sk_to_curve25519(&alice_ik_sk_sign).unwrap();
 
-        let (_alice_ek_pk, alice_ek_sk) = generate_identity_keypair();
-        let alice_ek_pk = PublicKey::from_slice(_alice_ek_pk.as_ref()).unwrap();
+        let (alice_ek_pk, alice_ek_sk) = sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::gen_keypair();
 
         let alice_shared = x3dh_sender(
             &alice_ik_sk,
@@ -250,7 +282,7 @@ mod tests {
             &bob_ik_sk,
             &bob_spk_sk,
             Some(bob_opk_sk),
-            &alice_ik_pk,
+            &_alice_ik_pk,
             &alice_ek_pk,
         ).unwrap();
 
@@ -266,21 +298,19 @@ mod tests {
 
     #[test]
     fn test_x3dh_without_opk() {
-        use sodiumoxide::crypto::sign::ed25519::gen_keypair as gen_sign_keypair;
-
         init().unwrap();
 
-        let (_bob_ik_pk, bob_ik_sk) = generate_identity_keypair();
-        let bob_ik_pk = PublicKey::from_slice(_bob_ik_pk.as_ref()).unwrap();
+        let (bob_ik_pk_sign, bob_ik_sk_sign) = generate_identity_keypair();
+        let bob_ik_pk = ed25519_pk_to_curve25519(&bob_ik_pk_sign).unwrap();
+        let bob_ik_sk = ed25519_sk_to_curve25519(&bob_ik_sk_sign).unwrap();
 
-        let (_bob_sign_pk, bob_sign_sk) = gen_sign_keypair();
-        let (bob_spk_pk, bob_spk_sk, _sig) = generate_signed_pre_key(&bob_sign_sk);
+        let (bob_spk_pk, bob_spk_sk, _sig) = generate_signed_pre_key(&bob_ik_sk_sign);
 
-        let (_alice_ik_pk, alice_ik_sk) = generate_identity_keypair();
-        let alice_ik_pk = PublicKey::from_slice(_alice_ik_pk.as_ref()).unwrap();
+        let (alice_ik_pk_sign, alice_ik_sk_sign) = generate_identity_keypair();
+        let _alice_ik_pk = ed25519_pk_to_curve25519(&alice_ik_pk_sign).unwrap();
+        let alice_ik_sk = ed25519_sk_to_curve25519(&alice_ik_sk_sign).unwrap();
 
-        let (_alice_ek_pk, alice_ek_sk) = generate_identity_keypair();
-        let alice_ek_pk = PublicKey::from_slice(_alice_ek_pk.as_ref()).unwrap();
+        let (alice_ek_pk, alice_ek_sk) = sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::gen_keypair();
 
         // X3DH without OPK — 3-way DH instead of 4-way
         let alice_shared = x3dh_sender(
@@ -295,7 +325,7 @@ mod tests {
             &bob_ik_sk,
             &bob_spk_sk,
             None, // no OPK
-            &alice_ik_pk,
+            &_alice_ik_pk,
             &alice_ek_pk,
         ).unwrap();
 
@@ -354,4 +384,14 @@ mod tests {
             assert!(uuid::Uuid::parse_str(&pair.key_id).is_ok(), "key_id should be valid UUID");
         }
     }
+
+    #[test]
+    fn test_signing_roundtrip() {
+        init().unwrap();
+        let (pk, sk) = generate_identity_keypair();
+        let message = b"Challenge 123";
+        let signature = sign_detached(message, &sk);
+        assert!(verify_detached(&signature, message, &pk));
+    }
 }
+

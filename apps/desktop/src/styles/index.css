@@ -1,0 +1,249 @@
+@import "tailwindcss";
+
+/* Trustline Tactical Cyber Design System v4.0 - Industrial Operations Pass */
+
+@theme {
+  /* Tactical Palette: Deep Graphite / Matte Charcoal */
+  --color-background-primary: #0a0a0b; 
+  --color-background-secondary: #0f0f11;
+  --color-background-accent: #141417;
+  
+  --color-border-tactical: rgba(45, 45, 50, 0.8);
+  --color-border-steel: rgba(100, 116, 139, 0.2);
+  
+  /* Operational Accents */
+  --color-accent-purple: #7c3aed;
+  --color-accent-cyan: #06b6d4;  /* Muted Cyan */
+  --color-accent-green: #10b981; /* Operational Green */
+  --color-accent-red: #ef4444;   /* Alert Red */
+  --color-accent-amber: #f59e0b; /* Alert Amber */
+  
+  --color-text-primary: #f1f5f9;
+  --color-text-secondary: #94a3b8;
+  --color-text-muted: #64748b;
+
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", "IBM Plex Mono", monospace;
+
+  /* Tactical Spacing System */
+  --spacing-4px: 0.25rem;
+  --spacing-8px: 0.5rem;
+  --spacing-12px: 0.75rem;
+  --spacing-16px: 1rem;
+  --spacing-24px: 1.5rem;
+  --spacing-32px: 2rem;
+
+  /* Industrial Border Radiuses (Sharper) */
+  --radius-button: 4px;
+  --radius-input: 4px;
+  --radius-card: 6px;
+  --radius-modal: 8px;
+
+  /* Typography Scale (Compact & Operational) */
+  --text-h1: 1.75rem;     /* 28px */
+  --text-h2: 1.25rem;     /* 20px */
+  --text-h3: 1rem;        /* 16px */
+  --text-body: 0.875rem;  /* 14px */
+  --text-meta: 0.75rem;   /* 12px */
+  --text-tiny: 0.625rem;  /* 10px */
+
+  --animate-pulse-subtle: pulse-subtle 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@layer base {
+  :root {
+    background-color: var(--color-background-primary);
+    color: var(--color-text-primary);
+    font-family: var(--font-sans);
+    font-size: 16px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    overflow: hidden;
+    background-color: var(--color-background-primary);
+    color: var(--color-text-primary);
+    line-height: 1.5;
+  }
+  
+  h1 { font-size: var(--text-h1); font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+  h2 { font-size: var(--text-h2); font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+  h3 { font-size: var(--text-h3); font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em; }
+  
+  ::selection {
+    background-color: rgba(6, 182, 212, 0.3);
+  }
+}
+
+@layer components {
+  /* Tactical Layout Modules */
+  .tactical-border {
+    border: 1px solid var(--color-border-tactical);
+  }
+
+  .tactical-sidebar {
+    height: 100%;
+    border-right: 1px solid var(--color-border-tactical);
+    background-color: var(--color-background-secondary);
+    transition: all 0.2s ease;
+  }
+
+  .tactical-header {
+    height: 48px;
+    background-color: var(--color-background-secondary);
+    border-bottom: 1px solid var(--color-border-tactical);
+    display: flex;
+    align-items: center;
+    padding: 0 var(--spacing-16px);
+  }
+
+  .tactical-card {
+    background: var(--color-background-secondary);
+    border: 1px solid var(--color-border-tactical);
+    border-radius: var(--radius-card);
+    padding: var(--spacing-16px);
+    transition: all 0.15s ease;
+  }
+  
+  .tactical-card:hover {
+    border-color: rgba(6, 182, 212, 0.4);
+    background-color: var(--color-background-accent);
+  }
+
+  .input-tactical {
+    width: 100%;
+    background-color: rgba(10, 10, 11, 0.8);
+    border: 1px solid var(--color-border-tactical);
+    border-radius: var(--radius-input);
+    padding: var(--spacing-8px) var(--spacing-12px);
+    color: var(--color-text-primary);
+    font-size: var(--text-body);
+    font-family: var(--font-mono);
+    transition: all 0.1s ease;
+  }
+  
+  .input-tactical:focus {
+    outline: none;
+    border-color: var(--color-accent-cyan);
+    box-shadow: 0 0 0 1px var(--color-accent-cyan);
+  }
+
+  .btn-tactical {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--spacing-8px);
+    padding: var(--spacing-8px) var(--spacing-16px);
+    border-radius: var(--radius-button);
+    font-weight: 700;
+    font-size: var(--text-meta);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    transition: all 0.1s ease;
+    cursor: pointer;
+    border: 1px solid transparent;
+    white-space: nowrap;
+  }
+
+  .btn-tactical-primary {
+    background-color: var(--color-accent-cyan);
+    color: #0a0a0b;
+  }
+  
+  .btn-tactical-primary:hover {
+    filter: brightness(1.1);
+  }
+  
+  .btn-tactical-primary:active {
+    transform: translateY(1px);
+  }
+
+  .btn-tactical-secondary {
+    background-color: transparent;
+    border: 1px solid var(--color-border-tactical);
+    color: var(--color-text-secondary);
+  }
+  
+  .btn-tactical-secondary:hover {
+    border-color: var(--color-text-secondary);
+    color: var(--color-text-primary);
+  }
+
+  /* Telemetry Elements */
+  .telemetry-label {
+    font-size: var(--text-tiny);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--color-text-muted);
+  }
+
+  .telemetry-value {
+    font-family: var(--font-mono);
+    font-size: var(--text-meta);
+    font-weight: 600;
+    color: var(--color-text-primary);
+  }
+
+  .status-dot {
+    height: 6px;
+    width: 6px;
+    border-radius: 1px;
+    display: inline-block;
+  }
+
+  .modal-overlay-tactical {
+    position: fixed;
+    inset: 0;
+    background-color: rgba(0, 0, 0, 0.85);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+
+  .modal-content-tactical {
+    background-color: var(--color-background-secondary);
+    border: 1px solid var(--color-border-tactical);
+    border-radius: var(--radius-modal);
+    width: 100%;
+    max-width: 500px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* Segmented Dividers */
+  .segmented-divider {
+    height: 1px;
+    background-image: linear-gradient(to right, var(--color-border-tactical) 50%, transparent 50%);
+    background-size: 4px 1px;
+    width: 100%;
+  }
+
+  /* Industrial Scrollbar */
+  .custom-scrollbar::-webkit-scrollbar { width: 4px; height: 4px; }
+  .custom-scrollbar::-webkit-scrollbar-track { background: #0a0a0b; }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: #2d2d32;
+    border-radius: 0px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
+
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+}
+
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+.tactical-grid-bg {
+  background-image: 
+    linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+  background-size: 20px 20px;
+}

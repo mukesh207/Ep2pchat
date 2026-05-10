@@ -1,1 +1,12 @@
-cognitive-complexity-threshold = 30
+# Strict Clippy Configuration for Trustline Enterprise
+blacklisted-names = ["todo", "fixme"]
+cognitive-complexity-threshold = 20
+disallowed-methods = [
+    { path = "std::option::Option::unwrap", reason = "Use .ok_or() or pattern matching to handle None safely in production." },
+    { path = "std::result::Result::unwrap", reason = "Use .map_err() or pattern matching to handle errors gracefully." }
+]
+enum-variant-name-threshold = 3
+max-trait-bounds-len = 3
+too-many-arguments-threshold = 7
+type-complexity-threshold = 250
+upper-case-acronyms-aggressive = true

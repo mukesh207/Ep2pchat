@@ -1,4 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from "react";
+import { CheckCircle, AlertCircle, Info, X } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -36,10 +38,12 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   return (
     <ToastContext.Provider value={{ addToast }}>
       {children}
-      <div className="toast-container">
-        {toasts.map((t) => (
-          <ToastItem key={t.id} toast={t} onDismiss={removeToast} />
-        ))}
+      <div className="fixed bottom-8 right-8 z-[200] flex flex-col gap-3 items-end pointer-events-none">
+        <AnimatePresence mode="popLayout">
+          {toasts.map((t) => (
+            <ToastItem key={t.id} toast={t} onDismiss={removeToast} />
+          ))}
+        </AnimatePresence>
       </div>
     </ToastContext.Provider>
   );
@@ -48,27 +52,43 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 // ── Single Toast ─────────────────────────────────────────────────────────────
 
 function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: number) => void }) {
-  const [exiting, setExiting] = useState(false);
-
   useEffect(() => {
     const timer = setTimeout(() => {
-      setExiting(true);
-      setTimeout(() => onDismiss(toast.id), 300);
-    }, 4000);
+      onDismiss(toast.id);
+    }, 5000);
     return () => clearTimeout(timer);
   }, [toast.id, onDismiss]);
 
+  const variantStyles = {
+    success: "border-accent-green/30 bg-accent-green/5 text-accent-green",
+    error: "border-accent-red/30 bg-accent-red/5 text-accent-red",
+    info: "border-accent-purple/30 bg-accent-purple/5 text-accent-purple",
+  };
+
+  const icons = {
+    success: <CheckCircle size={18} />,
+    error: <AlertCircle size={18} />,
+    info: <Info size={18} />,
+  };
+
   return (
-    <div className={`toast toast-${toast.variant} ${exiting ? "toast-exit" : ""}`}>
-      <span className="toast-icon">
-        {toast.variant === "success" && "✓"}
-        {toast.variant === "error" && "✕"}
-        {toast.variant === "info" && "ℹ"}
-      </span>
-      <span className="toast-message">{toast.message}</span>
-      <button className="toast-close" onClick={() => { setExiting(true); setTimeout(() => onDismiss(toast.id), 300); }}>
-        ×
+    <motion.div
+      layout
+      initial={{ opacity: 0, x: 20, scale: 0.95 }}
+      animate={{ opacity: 1, x: 0, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.2 } }}
+      className={`pointer-events-auto flex items-center gap-4 px-5 py-4 rounded-xl border backdrop-blur-xl min-w-[320px] max-w-[480px] shadow-xl ${variantStyles[toast.variant]}`}
+    >
+      <div className="shrink-0">{icons[toast.variant]}</div>
+      <div className="flex-1 text-[13px] font-semibold leading-snug">
+        {toast.message}
+      </div>
+      <button 
+        className="h-6 w-6 rounded-lg flex items-center justify-center hover:bg-white/10 transition-all opacity-60 hover:opacity-100" 
+        onClick={() => onDismiss(toast.id)}
+      >
+        <X size={14} />
       </button>
-    </div>
+    </motion.div>
   );
 }

@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Fingerprint, ShieldCheck, Copy, Check } from "lucide-react";
+import { Fingerprint, ShieldCheck, Copy, Check, X } from "lucide-react";
+import { motion } from "framer-motion";
 
 interface SafetyNumberModalProps {
   myIdentityKey: string;        // base64-encoded identity public key
@@ -13,27 +14,22 @@ interface SafetyNumberModalProps {
  * Uses the Signal-style approach: SHA-256(sorted(key_a, key_b)) → split into 12 × 5-digit blocks.
  */
 async function deriveSafetyNumber(keyA: string, keyB: string): Promise<string[]> {
-  // Sort keys so both parties compute the same number regardless of order
   const sorted = [keyA, keyB].sort();
   const combined = sorted.join("|");
-
   const encoder = new TextEncoder();
   const data = encoder.encode(combined);
 
-  // Double hash for extra security (Signal protocol style)
   const hash1 = await crypto.subtle.digest("SHA-256", data);
   const hash2 = await crypto.subtle.digest("SHA-256", hash1);
 
   const bytes = new Uint8Array(hash2);
   const blocks: string[] = [];
 
-  // Generate 12 blocks of 5 digits each from the hash bytes
   for (let i = 0; i < 12; i++) {
     const offset = (i * 2) % bytes.length;
     const value = (bytes[offset] << 8 | bytes[(offset + 1) % bytes.length]) % 100000;
     blocks.push(value.toString().padStart(5, "0"));
   }
-
   return blocks;
 }
 
@@ -46,7 +42,6 @@ export default function SafetyNumberModal({
   const [blocks, setBlocks] = useState<string[] | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // Compute on first render
   if (!blocks) {
     deriveSafetyNumber(myIdentityKey, theirIdentityKey).then(setBlocks);
   }
@@ -60,49 +55,64 @@ export default function SafetyNumberModal({
   };
 
   return (
-    <>
-      <div className="safety-number-backdrop" onClick={onClose} />
-      <div className="safety-number-modal" role="dialog" aria-modal="true">
-        <div className="safety-number-header">
-          <Fingerprint size={18} />
-          <span className="safety-number-title">Safety Number Verification</span>
-        </div>
+    <div className="modal-overlay-tactical" onClick={onClose}>
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.98, y: 10 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        className="modal-content-tactical max-w-[480px]" 
+        onClick={e => e.stopPropagation()}
+      >
+        <header className="h-14 border-b border-border-tactical flex items-center justify-between px-6 bg-background-secondary/80 backdrop-blur-md">
+          <div className="flex items-center gap-3">
+            <Fingerprint size={18} className="text-accent-purple" />
+            <span className="text-[13px] font-semibold text-text-primary">Safety Verification</span>
+          </div>
+          <button className="h-8 w-8 rounded-lg flex items-center justify-center text-text-muted hover:text-accent-red transition-all" onClick={onClose}><X size={20} /></button>
+        </header>
 
-        <div className="safety-number-body">
-          <p className="safety-number-explanation">
-            Compare this safety number with <strong style={{ color: "var(--accent-primary)" }}>{contactName}</strong> using
-            a trusted channel (in person, phone call, or video). If the numbers match, your conversation
-            is end-to-end encrypted and no one is intercepting your messages.
+        <div className="p-8 space-y-8">
+          <p className="text-[14px] text-text-secondary leading-relaxed font-medium">
+            Compare this safety number with <strong className="text-accent-purple">{contactName}</strong> using
+             an external trusted channel. If the numbers match exactly, your communication tunnel
+             is end-to-end encrypted and tamper-proof.
           </p>
 
-          {blocks ? (
-            <div className="safety-number-grid" id="safety-number-display">
-              {blocks.map((block, i) => (
-                <span key={i}>{block}</span>
-              ))}
-            </div>
-          ) : (
-            <div className="safety-number-grid" style={{ color: "var(--text-muted)" }}>
-              Computing...
-            </div>
-          )}
+          <div className="bg-background-primary/40 border border-border-tactical rounded-2xl p-6 shadow-inner">
+            {blocks ? (
+              <div className="grid grid-cols-3 gap-y-4 gap-x-2">
+                {blocks.map((block, i) => (
+                  <div key={i} className="text-center font-mono text-[17px] font-bold text-text-primary tracking-widest bg-background-secondary/50 py-2 rounded-lg border border-white/5 shadow-sm">
+                    {block}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="py-12 text-center text-[12px] font-medium text-text-muted uppercase tracking-widest opacity-40">
+                Computing entropy...
+              </div>
+            )}
+          </div>
 
-          <p className="safety-number-match-label">
-            <ShieldCheck size={12} style={{ verticalAlign: "middle", marginRight: 4 }} />
-            Both parties should see the same number
-          </p>
+          <div className="flex items-center justify-center gap-2 text-[11px] font-semibold text-accent-green uppercase tracking-wider bg-accent-green/5 py-2 rounded-xl border border-accent-green/10">
+            <ShieldCheck size={14} />
+            Mutual Identity Confirmation Required
+          </div>
         </div>
 
-        <div className="safety-number-actions">
-          <button className="btn btn-ghost btn-sm" onClick={handleCopy} disabled={!blocks}>
-            {copied ? <Check size={12} /> : <Copy size={12} />}
-            {copied ? "Copied" : "Copy Number"}
+        <footer className="p-6 border-t border-border-tactical bg-background-secondary/80 flex gap-3">
+          <button 
+            className="btn-tactical btn-tactical-secondary flex-1 font-semibold" 
+            onClick={handleCopy} 
+            disabled={!blocks}
+          >
+            {copied ? <Check size={16} className="text-accent-green" /> : <Copy size={16} />}
+            {copied ? "Copied" : "Copy for comparison"}
           </button>
-          <button className="btn btn-teal btn-sm" onClick={onClose}>
-            Done
+          <button className="btn-tactical btn-tactical-primary flex-1 font-semibold shadow-md" onClick={onClose}>
+            Mark as Verified
           </button>
-        </div>
-      </div>
-    </>
+        </footer>
+      </motion.div>
+    </div>
   );
 }

@@ -30,13 +30,11 @@ use tower_http::cors::CorsLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
-use webauthn_rs::prelude::*;
 
 /// Shared application state passed to all handlers.
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
-    pub webauthn: Arc<Webauthn>,
     pub ws: WsState,
     pub nats: NatsService,
     pub jwt_secret: Arc<String>,
@@ -131,18 +129,12 @@ async fn async_main() {
 
     tracing::info!("✅ Connected to NATS at {}", nats_url);
 
-    // ── WebAuthn ────────────────────────────────────────────────────────
+    // ── Auth Config ─────────────────────────────────────────────────────
     let frontend_url = env_or_local_default("FRONTEND_URL", "http://localhost:1420");
-    let rp_origin = url::Url::parse(&frontend_url).expect("Invalid FRONTEND_URL");
-    let rp_id = rp_origin.host_str().unwrap_or("localhost");
     let jwt_secret = Arc::new(required_env("JWT_SECRET"));
-
-    let builder = WebauthnBuilder::new(rp_id, &rp_origin).expect("Invalid configuration");
-    let webauthn = Arc::new(builder.build().expect("Invalid configuration"));
 
     let state = AppState {
         db: pool,
-        webauthn,
         ws: WsState::new(),
         nats: NatsService::new(nats_client),
         jwt_secret,
@@ -189,7 +181,6 @@ async fn async_main() {
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
     let addr = format!("0.0.0.0:{port}");
-    tracing::info!("✅ WebAuthn RP origin configured as {}", frontend_url);
     tracing::info!("✅ CORS origins configured");
     tracing::info!("✅ Listening on http://{}", addr);
 
@@ -221,7 +212,7 @@ fn env_flag(name: &str) -> bool {
 fn resolve_admin_bootstrap_enabled() -> bool {
     let enabled = env_flag("ADMIN_BOOTSTRAP_ENABLED");
     if enabled {
-        tracing::warn!("⚠️ ADMIN_BOOTSTRAP_ENABLED=true: passkey bypass route is active");
+        tracing::warn!("⚠️ ADMIN_BOOTSTRAP_ENABLED=true: bypass route is active");
     } else {
         tracing::info!("✅ Admin bootstrap route disabled by default");
     }

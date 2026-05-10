@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 
 export interface ContextMenuItem {
   label: string;
@@ -19,7 +20,18 @@ export function ContextMenu({ children, items }: ContextMenuProps) {
 
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
-    setPosition({ x: e.clientX, y: e.clientY });
+    
+    // Boundary check for viewport
+    const menuWidth = 220;
+    const menuHeight = items.length * 40 + 10;
+    
+    let x = e.clientX;
+    let y = e.clientY;
+    
+    if (x + menuWidth > window.innerWidth) x -= menuWidth;
+    if (y + menuHeight > window.innerHeight) y -= menuHeight;
+    
+    setPosition({ x, y });
     setVisible(true);
   };
 
@@ -39,64 +51,45 @@ export function ContextMenu({ children, items }: ContextMenuProps) {
   }, [visible]);
 
   return (
-    <div onContextMenu={handleContextMenu} style={{ height: "100%" }}>
+    <div onContextMenu={handleContextMenu} className="h-full">
       {children}
       
-      {visible && (
-        <div
-          ref={menuRef}
-          className="context-menu"
-          style={{
-            position: "fixed",
-            top: position.y,
-            left: position.x,
-            zIndex: 1000,
-            background: "var(--surface-2)",
-            border: "1px solid var(--border-bright)",
-            borderRadius: "var(--radius-md)",
-            padding: "4px",
-            boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
-            minWidth: 160,
-            animation: "fadeSlideIn 0.15s ease",
-          }}
-        >
-          {items.map((item, i) => (
-            <button
-              key={i}
-              className="context-menu-item"
-              style={{
-                width: "100%",
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                padding: "8px 12px",
-                border: "none",
-                background: "transparent",
-                color: item.variant === "danger" ? "var(--accent-danger)" : "var(--text-primary)",
-                fontSize: "0.75rem",
-                fontFamily: "var(--font-mono)",
-                cursor: "pointer",
-                borderRadius: "var(--radius-sm)",
-                textAlign: "left",
-              }}
-              onClick={(e) => {
-                e.stopPropagation();
-                item.onClick();
-                setVisible(false);
-              }}
-              onMouseEnter={(e) => {
-                (e.currentTarget as HTMLElement).style.background = "var(--surface-3)";
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLElement).style.background = "transparent";
-              }}
-            >
-              {item.icon && <span style={{ opacity: 0.7 }}>{item.icon}</span>}
-              {item.label}
-            </button>
-          ))}
-        </div>
-      )}
+      <AnimatePresence>
+        {visible && (
+          <motion.div
+            ref={menuRef}
+            initial={{ opacity: 0, scale: 0.98, y: -4 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.98, transition: { duration: 0.1 } }}
+            className="fixed z-[1000] min-w-[220px] p-1.5 rounded-xl border border-border-tactical bg-background-secondary/95 backdrop-blur-xl shadow-xl"
+            style={{
+              top: position.y,
+              left: position.x,
+            }}
+          >
+            <div className="flex flex-col gap-0.5">
+              {items.map((item, i) => (
+                <button
+                  key={i}
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-[13px] font-semibold transition-all text-left group ${
+                    item.variant === "danger" 
+                      ? "text-accent-red hover:bg-accent-red/10" 
+                      : "text-text-secondary hover:text-text-primary hover:bg-white/5"
+                  }`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    item.onClick();
+                    setVisible(false);
+                  }}
+                >
+                  {item.icon && <span className="opacity-60 group-hover:opacity-100 transition-opacity">{item.icon}</span>}
+                  <span className="flex-1">{item.label}</span>
+                </button>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

@@ -6,6 +6,25 @@ members = [
 ]
 resolver = "2"
 
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+dbg_macro = "warn"
+cognitive_complexity = "warn"
+large_enum_variant = "warn"
+needless_pass_by_value = "warn"
+redundant_clone = "warn"
+trivially_copy_pass_by_ref = "warn"
+unused_async = "warn"
+
 [workspace.package]
 edition = "2021"
 license = "MIT"

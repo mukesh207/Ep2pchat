@@ -1,14 +1,19 @@
 use crypto_core::{
-    decrypt_message, decrypt_symmetric, encrypt_message, encrypt_symmetric, generate_identity_keypair, generate_one_time_pre_keys,
-    generate_otpk_batch, generate_signed_pre_key, init, x3dh_receiver, x3dh_sender, MessageHeader,
-    RatchetSession,
+    decrypt_message, decrypt_symmetric, ed25519_pk_to_curve25519, ed25519_sk_to_curve25519,
+    encrypt_message, encrypt_symmetric, generate_identity_keypair, generate_one_time_pre_keys,
+    generate_otpk_batch, generate_signed_pre_key, init, sign_detached, x3dh_receiver, x3dh_sender,
+    MessageHeader, RatchetSession,
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::{PublicKey, SecretKey};
-use sodiumoxide::crypto::sign::ed25519::gen_keypair as gen_sign_keypair;
+use sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::{
+    PublicKey as BoxPublicKey, SecretKey as BoxSecretKey,
+};
+use sodiumoxide::crypto::sign::ed25519::{
+    PublicKey as SignPublicKey, SecretKey as SignSecretKey,
+};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -105,8 +110,7 @@ fn generate_keys() -> Result<KeyBundleResponse, String> {
     init().map_err(|_| "Failed to initialize crypto".to_string())?;
 
     let (ik_pk, ik_sk) = generate_identity_keypair();
-    let (_sign_pk, sign_sk) = gen_sign_keypair();
-    let (spk_pk, spk_sk, spk_sig) = generate_signed_pre_key(&sign_sk);
+    let (spk_pk, spk_sk, spk_sig) = generate_signed_pre_key(&ik_sk);
     let opks = generate_one_time_pre_keys(50);
 
     let mut opk_responses = Vec::new();
@@ -126,6 +130,21 @@ fn generate_keys() -> Result<KeyBundleResponse, String> {
         signed_pre_key_signature: STANDARD.encode(spk_sig),
         one_time_pre_keys: opk_responses,
     })
+}
+
+#[tauri::command]
+fn sign_login_challenge(mut identity_secret_b64: String, challenge_b64: String) -> Result<String, String> {
+    init().map_err(|_| "Failed to initialize crypto".to_string())?;
+
+    let mut decoded_sk = STANDARD.decode(&identity_secret_b64).map_err(|e| e.to_string())?;
+    let sk = SignSecretKey::from_slice(&decoded_sk).ok_or("invalid identity_secret length")?;
+    identity_secret_b64.zeroize();
+    decoded_sk.zeroize();
+
+    let challenge = STANDARD.decode(&challenge_b64).map_err(|e| e.to_string())?;
+    let signature = sign_detached(&challenge, &sk);
+
+    Ok(STANDARD.encode(signature))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -152,42 +171,37 @@ fn story_decrypt(ciphertext_b64: String, key_b64: String, nonce_b64: String) -> 
 
 #[tauri::command]
 async fn alice_handshake_and_encrypt(
-    mut alice_ik_sk: String,
-    bob_ik_pk: String,
-    bob_spk_pk: String,
-    bob_opk_pk: Option<String>,
+    mut alice_ik_sk_b64: String,
+    bob_ik_pk_b64: String,
+    bob_spk_pk_b64: String,
+    bob_opk_pk_b64: Option<String>,
     message: String,
 ) -> Result<(String, EncryptedPayload), String> {
     init().map_err(|_| "Failed to initialize crypto".to_string())?;
 
-    // SECURITY: caller-controlled input
-    let mut decoded_aik_sk = STANDARD.decode(&alice_ik_sk).map_err(|e| e.to_string())?;
-    // SECURITY: caller-controlled input
-    let aik_sk =
-        SecretKey::from_slice(&decoded_aik_sk).ok_or("invalid input: alice_ik_sk length")?;
-
-    // Explicitly zeroize private key material from memory
-    alice_ik_sk.zeroize();
+    let mut decoded_aik_sk = STANDARD.decode(&alice_ik_sk_b64).map_err(|e| e.to_string())?;
+    let aik_sk_sign = SignSecretKey::from_slice(&decoded_aik_sk).ok_or("invalid input: alice_ik_sk length")?;
+    let aik_sk = ed25519_sk_to_curve25519(&aik_sk_sign).map_err(|e| e.to_string())?;
+    alice_ik_sk_b64.zeroize();
     decoded_aik_sk.zeroize();
 
-    // SECURITY: caller-controlled input
-    let bik_pk = PublicKey::from_slice(&STANDARD.decode(bob_ik_pk).map_err(|e| e.to_string())?)
+    let bik_pk_sign = SignPublicKey::from_slice(&STANDARD.decode(bob_ik_pk_b64).map_err(|e| e.to_string())?)
         .ok_or("invalid input: bob_ik_pk length")?;
-    // SECURITY: caller-controlled input
-    let bspk_pk =
-        PublicKey::from_slice(&STANDARD.decode(bob_spk_pk).map_err(|e| e.to_string())?)
+    let bik_pk = ed25519_pk_to_curve25519(&bik_pk_sign).map_err(|e| e.to_string())?;
+
+    let bspk_pk = BoxPublicKey::from_slice(&STANDARD.decode(bob_spk_pk_b64).map_err(|e| e.to_string())?)
             .ok_or("invalid input: bob_spk_pk length")?;
-    let bopk_pk = if let Some(pk) = bob_opk_pk {
-        // SECURITY: caller-controlled input
-        Some(
-            PublicKey::from_slice(&STANDARD.decode(pk).map_err(|e| e.to_string())?)
-                .ok_or("invalid input: bob_opk_pk length")?,
-        )
+
+    let bopk_pk = if let Some(pk) = bob_opk_pk_b64 {
+        Some(BoxPublicKey::from_slice(&STANDARD.decode(pk).map_err(|e| e.to_string())?)
+                .ok_or("invalid input: bob_opk_pk length")?)
     } else {
         None
     };
 
-    let (aek_pk, aek_sk) = generate_identity_keypair();
+    let (_aek_pk_sign, aek_sk_sign) = generate_identity_keypair();
+    let aek_pk = BoxPublicKey::from_slice(_aek_pk_sign.as_ref()).ok_or("conversion failed")?;
+    let aek_sk = ed25519_sk_to_curve25519(&aek_sk_sign).map_err(|e| e.to_string())?;
 
     let shared_secret = x3dh_sender(&aik_sk, &aek_sk, &bik_pk, &bspk_pk, bopk_pk.as_ref())
         .map_err(|e| e.to_string())?;
@@ -204,38 +218,41 @@ async fn alice_handshake_and_encrypt(
     ))
 }
 
-/// Perform the X3DH handshake as Alice (sender) **without** encrypting.
-/// Returns `{ shared_secret_b64, ephemeral_pk_b64 }` so the caller can
-/// initialise a Double Ratchet session with `ratchet_init_sender`, then
-/// encrypt with `ratchet_encrypt`.
 #[tauri::command]
 fn alice_x3dh(
-    mut alice_ik_sk: String,
-    bob_ik_pk: String,
-    bob_spk_pk: String,
-    bob_opk_pk: Option<String>,
+    mut alice_ik_sk_b64: String,
+    bob_ik_pk_b64: String,
+    bob_spk_pk_b64: String,
+    bob_opk_pk_b64: Option<String>,
 ) -> Result<serde_json::Value, String> {
     init().map_err(|_| "Failed to initialize crypto".to_string())?;
 
-    let mut decoded = STANDARD.decode(&alice_ik_sk).map_err(|e| e.to_string())?;
-    let aik_sk = SecretKey::from_slice(&decoded).ok_or("invalid alice IK length")?;
-    alice_ik_sk.zeroize();
+    let mut decoded = STANDARD.decode(&alice_ik_sk_b64).map_err(|e| e.to_string())?;
+    let aik_sk_sign = SignSecretKey::from_slice(&decoded).ok_or("invalid alice IK length")?;
+    let aik_sk = ed25519_sk_to_curve25519(&aik_sk_sign).map_err(|e| e.to_string())?;
+    alice_ik_sk_b64.zeroize();
     decoded.zeroize();
 
-    let bik_pk = PublicKey::from_slice(&STANDARD.decode(&bob_ik_pk).map_err(|e| e.to_string())?)
+    let bik_pk_sign = SignPublicKey::from_slice(&STANDARD.decode(&bob_ik_pk_b64).map_err(|e| e.to_string())?)
         .ok_or("invalid bob IK")?;
-    let bspk_pk = PublicKey::from_slice(&STANDARD.decode(&bob_spk_pk).map_err(|e| e.to_string())?)
+    let bik_pk = ed25519_pk_to_curve25519(&bik_pk_sign).map_err(|e| e.to_string())?;
+
+    let bspk_pk = BoxPublicKey::from_slice(&STANDARD.decode(&bob_spk_pk_b64).map_err(|e| e.to_string())?)
         .ok_or("invalid bob SPK")?;
-    let bopk_pk = bob_opk_pk
+
+    let bopk_pk = bob_opk_pk_b64
         .map(|pk| {
             STANDARD
                 .decode(&pk)
                 .map_err(|e| e.to_string())
-                .and_then(|b| PublicKey::from_slice(&b).ok_or_else(|| "invalid OPK".to_string()))
+                .and_then(|b| BoxPublicKey::from_slice(&b).ok_or_else(|| "invalid OPK".to_string()))
         })
         .transpose()?;
 
-    let (aek_pk, aek_sk) = generate_identity_keypair();
+    let (aek_pk_sign, aek_sk_sign) = generate_identity_keypair();
+    let aek_pk = BoxPublicKey::from_slice(aek_pk_sign.as_ref()).unwrap();
+    let aek_sk = ed25519_sk_to_curve25519(&aek_sk_sign).map_err(|e| e.to_string())?;
+
     let mut secret = x3dh_sender(&aik_sk, &aek_sk, &bik_pk, &bspk_pk, bopk_pk.as_ref())
         .map_err(|e| e.to_string())?;
 
@@ -247,42 +264,41 @@ fn alice_x3dh(
     Ok(out)
 }
 
-/// Perform the X3DH handshake as Bob (receiver) **without** decrypting.
-/// Returns the shared secret as base64 so the caller can initialise a
-/// Double Ratchet session with `ratchet_init_receiver`, then decrypt
-/// with `ratchet_decrypt`.
 #[tauri::command]
 fn bob_x3dh(
-    mut bob_ik_sk: String,
-    mut bob_spk_sk: String,
-    bob_opk_sk: Option<String>,
-    alice_ik_pk: String,
-    alice_ek_pk: String,
+    mut bob_ik_sk_b64: String,
+    mut bob_spk_sk_b64: String,
+    bob_opk_sk_b64: Option<String>,
+    alice_ik_pk_b64: String,
+    alice_ek_pk_b64: String,
 ) -> Result<String, String> {
     init().map_err(|_| "Failed to initialize crypto".to_string())?;
 
-    let mut dbik = STANDARD.decode(&bob_ik_sk).map_err(|e| e.to_string())?;
-    let bik_sk = SecretKey::from_slice(&dbik).ok_or("invalid bob IK")?;
-    bob_ik_sk.zeroize();
+    let mut dbik = STANDARD.decode(&bob_ik_sk_b64).map_err(|e| e.to_string())?;
+    let bik_sk_sign = SignSecretKey::from_slice(&dbik).ok_or("invalid bob IK")?;
+    let bik_sk = ed25519_sk_to_curve25519(&bik_sk_sign).map_err(|e| e.to_string())?;
+    bob_ik_sk_b64.zeroize();
     dbik.zeroize();
 
-    let mut dbspk = STANDARD.decode(&bob_spk_sk).map_err(|e| e.to_string())?;
-    let bspk_sk = SecretKey::from_slice(&dbspk).ok_or("invalid bob SPK")?;
-    bob_spk_sk.zeroize();
+    let mut dbspk = STANDARD.decode(&bob_spk_sk_b64).map_err(|e| e.to_string())?;
+    let bspk_sk = BoxSecretKey::from_slice(&dbspk).ok_or("invalid bob SPK")?;
+    bob_spk_sk_b64.zeroize();
     dbspk.zeroize();
 
-    let bopk_sk = bob_opk_sk
+    let bopk_sk = bob_opk_sk_b64
         .map(|sk| {
             STANDARD
                 .decode(&sk)
                 .map_err(|e| e.to_string())
-                .and_then(|b| SecretKey::from_slice(&b).ok_or_else(|| "invalid OPK SK".to_string()))
+                .and_then(|b| BoxSecretKey::from_slice(&b).ok_or_else(|| "invalid OPK SK".to_string()))
         })
         .transpose()?;
 
-    let aik_pk = PublicKey::from_slice(&STANDARD.decode(&alice_ik_pk).map_err(|e| e.to_string())?)
+    let aik_pk_sign = SignPublicKey::from_slice(&STANDARD.decode(&alice_ik_pk_b64).map_err(|e| e.to_string())?)
         .ok_or("invalid alice IK")?;
-    let aek_pk = PublicKey::from_slice(&STANDARD.decode(&alice_ek_pk).map_err(|e| e.to_string())?)
+    let aik_pk = ed25519_pk_to_curve25519(&aik_pk_sign).map_err(|e| e.to_string())?;
+
+    let aek_pk = BoxPublicKey::from_slice(&STANDARD.decode(&alice_ek_pk_b64).map_err(|e| e.to_string())?)
         .ok_or("invalid alice EK")?;
 
     let mut secret = x3dh_receiver(&bik_sk, &bspk_sk, bopk_sk.as_ref(), &aik_pk, &aek_pk)
@@ -294,38 +310,30 @@ fn bob_x3dh(
 
 #[tauri::command]
 fn bob_handshake_and_decrypt(
-    mut bob_ik_sk: String,
-    mut bob_spk_sk: String,
-    mut bob_opk_sk: Option<String>,
-    alice_ik_pk: String,
-    alice_ek_pk: String,
+    mut bob_ik_sk_b64: String,
+    mut bob_spk_sk_b64: String,
+    mut bob_opk_sk_b64: Option<String>,
+    alice_ik_pk_b64: String,
+    alice_ek_pk_b64: String,
     ciphertext: String,
     nonce: String,
 ) -> Result<String, String> {
     init().map_err(|_| "Failed to initialize crypto".to_string())?;
 
-    // SECURITY: caller-controlled input
-    let mut decoded_bik_sk = STANDARD.decode(&bob_ik_sk).map_err(|e| e.to_string())?;
-    // SECURITY: caller-controlled input
-    let bik_sk =
-        SecretKey::from_slice(&decoded_bik_sk).ok_or("invalid input: bob_ik_sk length")?;
-    bob_ik_sk.zeroize();
+    let mut decoded_bik_sk = STANDARD.decode(&bob_ik_sk_b64).map_err(|e| e.to_string())?;
+    let bik_sk_sign = SignSecretKey::from_slice(&decoded_bik_sk).ok_or("invalid input: bob_ik_sk length")?;
+    let bik_sk = ed25519_sk_to_curve25519(&bik_sk_sign).map_err(|e| e.to_string())?;
+    bob_ik_sk_b64.zeroize();
     decoded_bik_sk.zeroize();
 
-    // SECURITY: caller-controlled input
-    let mut decoded_bspk_sk = STANDARD.decode(&bob_spk_sk).map_err(|e| e.to_string())?;
-    // SECURITY: caller-controlled input
-    let bspk_sk =
-        SecretKey::from_slice(&decoded_bspk_sk).ok_or("invalid input: bob_spk_sk length")?;
-    bob_spk_sk.zeroize();
+    let mut decoded_bspk_sk = STANDARD.decode(&bob_spk_sk_b64).map_err(|e| e.to_string())?;
+    let bspk_sk = BoxSecretKey::from_slice(&decoded_bspk_sk).ok_or("invalid input: bob_spk_sk length")?;
+    bob_spk_sk_b64.zeroize();
     decoded_bspk_sk.zeroize();
 
-    let bopk_sk = if let Some(ref mut sk_str) = bob_opk_sk {
-        // SECURITY: caller-controlled input
+    let bopk_sk = if let Some(ref mut sk_str) = bob_opk_sk_b64 {
         let mut decoded_bopk_sk = STANDARD.decode(&sk_str).map_err(|e| e.to_string())?;
-        // SECURITY: caller-controlled input
-        let sk =
-            SecretKey::from_slice(&decoded_bopk_sk).ok_or("invalid input: bob_opk_sk length")?;
+        let sk = BoxSecretKey::from_slice(&decoded_bopk_sk).ok_or("invalid input: bob_opk_sk length")?;
         sk_str.zeroize();
         decoded_bopk_sk.zeroize();
         Some(sk)
@@ -333,11 +341,11 @@ fn bob_handshake_and_decrypt(
         None
     };
 
-    // SECURITY: caller-controlled input
-    let aik_pk = PublicKey::from_slice(&STANDARD.decode(alice_ik_pk).map_err(|e| e.to_string())?)
+    let aik_pk_sign = SignPublicKey::from_slice(&STANDARD.decode(alice_ik_pk_b64).map_err(|e| e.to_string())?)
         .ok_or("invalid input: alice_ik_pk length")?;
-    // SECURITY: caller-controlled input
-    let aek_pk = PublicKey::from_slice(&STANDARD.decode(alice_ek_pk).map_err(|e| e.to_string())?)
+    let aik_pk = ed25519_pk_to_curve25519(&aik_pk_sign).map_err(|e| e.to_string())?;
+
+    let aek_pk = BoxPublicKey::from_slice(&STANDARD.decode(alice_ek_pk_b64).map_err(|e| e.to_string())?)
         .ok_or("invalid input: alice_ek_pk length")?;
 
     let shared_secret = x3dh_receiver(&bik_sk, &bspk_sk, bopk_sk.as_ref(), &aik_pk, &aek_pk)
@@ -352,24 +360,15 @@ fn bob_handshake_and_decrypt(
     String::from_utf8(decrypted).map_err(|e| e.to_string())
 }
 
-// ── Double Ratchet Tauri Commands ────────────────────────────────────────────
-
-/// Bootstrap a ratchet session for the SENDER (Alice) from an X3DH shared secret.
-/// Call this once, right after `alice_handshake_and_encrypt`, for each new conversation.
-/// Returns the session as a JSON string — persist it in the vault keyed by conv_id.
 #[tauri::command]
 fn ratchet_init_sender(
-    shared_secret_b64: String,  // SK from x3dh_sender, base64
-    bob_spk_public_b64: String, // Bob's SPK public key, base64
+    shared_secret_b64: String,
+    bob_spk_public_b64: String,
 ) -> Result<String, String> {
     init().map_err(|_| "crypto init failed".to_string())?;
 
-    let secret_bytes = STANDARD
-        .decode(&shared_secret_b64)
-        .map_err(|e| e.to_string())?;
-    let spk_bytes = STANDARD
-        .decode(&bob_spk_public_b64)
-        .map_err(|e| e.to_string())?;
+    let secret_bytes = STANDARD.decode(&shared_secret_b64).map_err(|e| e.to_string())?;
+    let spk_bytes = STANDARD.decode(&bob_spk_public_b64).map_err(|e| e.to_string())?;
 
     let mut secret = [0u8; 32];
     let mut spk = [0u8; 32];
@@ -383,9 +382,6 @@ fn ratchet_init_sender(
     session.to_json().map_err(|e| e.to_string())
 }
 
-/// Bootstrap a ratchet session for the RECEIVER (Bob) from an X3DH shared secret.
-/// `bob_spk_public_b64` and `bob_spk_private_b64` are Bob's Signed Pre-Key — already
-/// in the local vault from key generation.
 #[tauri::command]
 fn ratchet_init_receiver(
     shared_secret_b64: String,
@@ -394,43 +390,24 @@ fn ratchet_init_receiver(
 ) -> Result<String, String> {
     init().map_err(|_| "crypto init failed".to_string())?;
 
-    let secret_bytes = STANDARD
-        .decode(&shared_secret_b64)
-        .map_err(|e| e.to_string())?;
-    let spk_pub_bytes = STANDARD
-        .decode(&bob_spk_public_b64)
-        .map_err(|e| e.to_string())?;
-    let spk_prv_bytes = STANDARD
-        .decode(&bob_spk_private_b64)
-        .map_err(|e| e.to_string())?;
+    let secret_bytes = STANDARD.decode(&shared_secret_b64).map_err(|e| e.to_string())?;
+    let spk_pub_bytes = STANDARD.decode(&bob_spk_public_b64).map_err(|e| e.to_string())?;
+    let spk_prv_bytes = STANDARD.decode(&bob_spk_private_b64).map_err(|e| e.to_string())?;
 
     let mut secret = [0u8; 32];
     let mut spk_pub = [0u8; 32];
     let mut spk_prv = [0u8; 32];
-    if secret_bytes.len() != 32 {
-        return Err("shared_secret must be 32 bytes".to_string());
-    }
-    if spk_pub_bytes.len() != 32 {
-        return Err("spk_public must be 32 bytes".to_string());
-    }
-    if spk_prv_bytes.len() != 32 {
-        return Err("spk_private must be 32 bytes".to_string());
+    if secret_bytes.len() != 32 || spk_pub_bytes.len() != 32 || spk_prv_bytes.len() != 32 {
+        return Err("invalid key length".to_string());
     }
     secret.copy_from_slice(&secret_bytes);
     spk_pub.copy_from_slice(&spk_pub_bytes);
     spk_prv.copy_from_slice(&spk_prv_bytes);
 
-    let session =
-        RatchetSession::init_as_receiver(&secret, spk_pub, spk_prv).map_err(|e| e.to_string())?;
+    let session = RatchetSession::init_as_receiver(&secret, spk_pub, spk_prv).map_err(|e| e.to_string())?;
     session.to_json().map_err(|e| e.to_string())
 }
 
-/// Encrypt a plaintext message using the Double Ratchet.
-/// - `session_json`: the current session state (load from vault, update after call)
-/// - `plaintext`: UTF-8 message string
-/// - `conv_id`: conversation identifier used as associated data (binds msg to conversation)
-///
-/// Returns `{ new_session_json, header, ciphertext_b64 }`.
 #[tauri::command]
 fn ratchet_encrypt(
     session_json: String,
@@ -438,11 +415,7 @@ fn ratchet_encrypt(
     conv_id: String,
 ) -> Result<serde_json::Value, String> {
     let mut session = RatchetSession::from_json(&session_json).map_err(|e| e.to_string())?;
-
-    let (header, ciphertext) = session
-        .encrypt(plaintext.as_bytes(), conv_id.as_bytes())
-        .map_err(|e| e.to_string())?;
-
+    let (header, ciphertext) = session.encrypt(plaintext.as_bytes(), conv_id.as_bytes()).map_err(|e| e.to_string())?;
     let new_session_json = session.to_json().map_err(|e| e.to_string())?;
 
     Ok(serde_json::json!({
@@ -452,13 +425,6 @@ fn ratchet_encrypt(
     }))
 }
 
-/// Decrypt a received message using the Double Ratchet.
-/// - `session_json`: the current session state (load from vault, update after call)
-/// - `header`: the `MessageHeader` received alongside the ciphertext
-/// - `ciphertext_b64`: base64 ciphertext
-/// - `conv_id`: must match what was used during encrypt
-///
-/// Returns `{ new_session_json, plaintext }`.
 #[tauri::command]
 fn ratchet_decrypt(
     session_json: String,
@@ -467,14 +433,8 @@ fn ratchet_decrypt(
     conv_id: String,
 ) -> Result<serde_json::Value, String> {
     let mut session = RatchetSession::from_json(&session_json).map_err(|e| e.to_string())?;
-    let ciphertext = STANDARD
-        .decode(&ciphertext_b64)
-        .map_err(|e| e.to_string())?;
-
-    let plaintext_bytes = session
-        .decrypt(&header, &ciphertext, conv_id.as_bytes())
-        .map_err(|e| e.to_string())?;
-
+    let ciphertext = STANDARD.decode(&ciphertext_b64).map_err(|e| e.to_string())?;
+    let plaintext_bytes = session.decrypt(&header, &ciphertext, conv_id.as_bytes()).map_err(|e| e.to_string())?;
     let plaintext = String::from_utf8(plaintext_bytes).map_err(|e| e.to_string())?;
     let new_session_json = session.to_json().map_err(|e| e.to_string())?;
 
@@ -484,133 +444,6 @@ fn ratchet_decrypt(
     }))
 }
 
-// ── OTPK replenishment ────────────────────────────────────────────────────────
-
-/// How many unused server-side OTPKs trigger a replenishment cycle.
-const REPLENISH_THRESHOLD: i64 = 10;
-/// How many fresh pairs to generate and upload per cycle.
-const REPLENISH_BATCH_SIZE: usize = 20;
-
-#[derive(serde::Deserialize)]
-struct OtpkCountResponse {
-    count: i64,
-    #[allow(dead_code)]
-    threshold: i64,
-}
-
-#[derive(serde::Deserialize)]
-struct UploadOtpksResponse {
-    uploaded: usize,
-}
-
-#[derive(serde::Serialize)]
-pub struct ReplenishResult {
-    pub needed: bool,
-    pub uploaded: usize,
-    pub server_count_before: i64,
-    pub private_pairs: Vec<OtpkPrivatePair>,
-}
-
-#[derive(serde::Serialize)]
-pub struct OtpkPrivatePair {
-    pub key_id: String,
-    pub private_key: Vec<u8>,
-}
-
-#[tauri::command]
-fn collect_passkey(_app: tauri::AppHandle, challenge_b64: String, mode: String) -> Result<String, String> {
-    use std::net::TcpListener;
-    use std::io::{Read, Write};
-    use std::time::Duration;
-
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
-    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-
-    // Set a 60-second timeout so the app doesn't hang forever
-    listener.set_nonblocking(false).ok();
-    let _ = listener.set_ttl(60);
-
-    let url = format!("http://localhost:1420/passkey-bridge.html?bridge=true&mode={}&port={}&c={}", mode, port, challenge_b64);
-    eprintln!("[collect_passkey] Opening browser at: {}", &url[..url.len().min(120)]);
-
-    // Use xdg-open directly on Linux to open the default browser
-    let open_result = std::process::Command::new("xdg-open")
-        .arg(&url)
-        .spawn();
-
-    match &open_result {
-        Ok(_) => eprintln!("[collect_passkey] Browser opened successfully, waiting for passkey..."),
-        Err(e) => {
-            eprintln!("[collect_passkey] Failed to open browser: {}", e);
-            return Err(format!("Failed to open browser: {}", e));
-        }
-    }
-
-    // Set a read timeout so we don't block forever
-    listener.set_nonblocking(false).ok();
-
-    for stream in listener.incoming() {
-        if let Ok(mut stream) = stream {
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
-            let mut buf = [0; 16384];
-            if let Ok(bytes_read) = stream.read(&mut buf) {
-                let request = String::from_utf8_lossy(&buf[..bytes_read]).to_string();
-                
-                if request.starts_with("OPTIONS") {
-                    let response = "HTTP/1.1 200 OK\r\n\
-                                  Access-Control-Allow-Origin: *\r\n\
-                                  Access-Control-Allow-Methods: POST, OPTIONS\r\n\
-                                  Access-Control-Allow-Headers: Content-Type\r\n\
-                                  \r\n";
-                    let _ = stream.write_all(response.as_bytes());
-                    continue;
-                }
-
-                if let Some(body_idx) = request.find("\r\n\r\n") {
-                    let mut body = request[body_idx + 4..].trim_matches('\0').to_string();
-                    
-                    let mut content_length = 0;
-                    for line in request[..body_idx].split("\r\n") {
-                        if line.to_lowercase().starts_with("content-length:") {
-                            if let Ok(len) = line[15..].trim().parse::<usize>() {
-                                content_length = len;
-                            }
-                        }
-                    }
-
-                    while body.len() < content_length {
-                        let mut more_buf = [0; 16384];
-                        match stream.read(&mut more_buf) {
-                            Ok(0) => break,
-                            Ok(n) => body.push_str(&String::from_utf8_lossy(&more_buf[..n])),
-                            Err(_) => break,
-                        }
-                    }
-
-                    eprintln!("[collect_passkey] Received credential from browser ({} bytes)", body.len());
-                    let response = "HTTP/1.1 200 OK\r\n\
-                                  Access-Control-Allow-Origin: *\r\n\
-                                  Content-Type: application/json\r\n\
-                                  \r\n\
-                                  {\"status\":\"ok\"}";
-                    let _ = stream.write_all(response.as_bytes());
-                    return Ok(body);
-                }
-            }
-        }
-    }
-    Err("Socket closed without receiving passkey data".into())
-}
-
-/// Check the server-side OTPK count and upload a fresh batch when below the
-/// replenishment threshold.  Designed to be called fire-and-forget from the
-/// frontend on login and after each outbound X3DH handshake.
-///
-/// **Ordering guarantee**: private keys are written to a local JSON file in
-/// the app data directory *before* public keys are uploaded to the server.
-/// If the app crashes between the two steps, the orphaned local private keys
-/// will simply never be claimed — far safer than orphaned server entries,
-/// which would silently cause decryption failures on Bob's side.
 #[tauri::command]
 async fn check_and_replenish_otpks(
     session: tauri::State<'_, SessionState>,
@@ -618,89 +451,37 @@ async fn check_and_replenish_otpks(
     let base_url = std::env::var("VITE_API_BASE_URL")
         .unwrap_or_else(|_| "https://api.encryptedchat.in/api/v1".to_string());
 
-    // Read session JWT from in-memory Tauri state.
     let token = {
-        let guard = session
-            .jwt
-            .read()
-            .map_err(|_| "session state lock poisoned".to_string())?;
+        let guard = session.jwt.read().map_err(|_| "session state lock poisoned".to_string())?;
         guard.clone().unwrap_or_default()
     };
-
-    if token.is_empty() {
-        return Err("No auth token — user must be logged in".to_string());
-    }
+    if token.is_empty() { return Err("No auth token".to_string()); }
 
     let client = reqwest::Client::new();
+    let count_resp = client.get(format!("{}/keys/otpk/count", base_url)).bearer_auth(&token).send().await
+        .map_err(|e| e.to_string())?.json::<OtpkCountResponse>().await.map_err(|e| e.to_string())?;
 
-    // 1. Ask the server how many unused OTPKs it holds for this device
-    let count_resp = client
-        .get(format!("{}/keys/otpk/count", base_url))
-        .bearer_auth(&token)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .json::<OtpkCountResponse>()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if count_resp.count >= REPLENISH_THRESHOLD {
-        return Ok(ReplenishResult {
-            needed: false,
-            uploaded: 0,
-            server_count_before: count_resp.count,
-            private_pairs: Vec::new(),
-        });
+    if count_resp.count >= 10 {
+        return Ok(ReplenishResult { needed: false, uploaded: 0, server_count_before: count_resp.count, private_pairs: Vec::new() });
     }
 
-    // 2. Generate fresh keypairs entirely in Rust — private keys never in JS
-    let pairs = generate_otpk_batch(REPLENISH_BATCH_SIZE);
-    let private_pairs: Vec<OtpkPrivatePair> = pairs
-        .iter()
-        .map(|p| OtpkPrivatePair {
-            key_id: p.key_id.clone(),
-            private_key: p.private_key.to_vec(),
-        })
-        .collect();
+    let pairs = generate_otpk_batch(20);
+    let private_pairs = pairs.iter().map(|p| OtpkPrivatePair { key_id: p.key_id.clone(), private_key: p.private_key.to_vec() }).collect();
+    let upload_payload: Vec<serde_json::Value> = pairs.iter().map(|p| serde_json::json!({ "key_id": p.key_id, "public_key": STANDARD.encode(p.public_key) })).collect();
 
-    // 3. Upload only the public keys to the server
-    let upload_payload: Vec<serde_json::Value> = pairs
-        .iter()
-        .map(|p| {
-            serde_json::json!({
-                "key_id":     p.key_id,
-                "public_key": STANDARD.encode(p.public_key),
-            })
-        })
-        .collect();
-
-    let upload_resp = client
-        .post(format!("{}/keys/otpk/upload", base_url))
-        .bearer_auth(&token)
-        .json(&serde_json::json!({ "keys": upload_payload }))
-        .send()
-        .await
+    let upload_resp = client.post(format!("{}/keys/otpk/upload", base_url)).bearer_auth(&token).json(&serde_json::json!({ "keys": upload_payload })).send().await
         .map_err(|e| e.to_string())?;
 
-    if !upload_resp.status().is_success() {
-        return Err(format!("OTPK upload failed: HTTP {}", upload_resp.status()));
-    }
+    if !upload_resp.status().is_success() { return Err(format!("OTPK upload failed: {}", upload_resp.status())); }
+    let uploaded = upload_resp.json::<UploadOtpksResponse>().await.map_err(|e| e.to_string())?.uploaded;
 
-    let uploaded = upload_resp
-        .json::<UploadOtpksResponse>()
-        .await
-        .map_err(|e| e.to_string())?
-        .uploaded;
-
-    Ok(ReplenishResult {
-        needed: true,
-        uploaded,
-        server_count_before: count_resp.count,
-        private_pairs,
-    })
+    Ok(ReplenishResult { needed: true, uploaded, server_count_before: count_resp.count, private_pairs })
 }
 
-// ── Tauri entry point ─────────────────────────────────────────────────────────
+#[derive(serde::Deserialize)] struct OtpkCountResponse { count: i64 }
+#[derive(serde::Deserialize)] struct UploadOtpksResponse { uploaded: usize }
+#[derive(serde::Serialize)] pub struct ReplenishResult { pub needed: bool, pub uploaded: usize, pub server_count_before: i64, pub private_pairs: Vec<OtpkPrivatePair> }
+#[derive(serde::Serialize)] pub struct OtpkPrivatePair { pub key_id: String, pub private_key: Vec<u8> }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -716,23 +497,20 @@ pub fn run() {
             clear_vault_session,
             set_session_jwt,
             generate_keys,
-            // X3DH (standalone — used to bootstrap ratchet sessions)
+            sign_login_challenge,
             alice_x3dh,
             bob_x3dh,
-            // Legacy X3DH+encrypt in one shot (kept for reference)
             alice_handshake_and_encrypt,
             bob_handshake_and_decrypt,
-            // Double Ratchet
             ratchet_init_sender,
             ratchet_init_receiver,
             ratchet_encrypt,
             ratchet_decrypt,
-            // OTPK replenishment
             check_and_replenish_otpks,
-            collect_passkey,
             story_encrypt,
             story_decrypt,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+

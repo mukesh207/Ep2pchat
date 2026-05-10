@@ -30,6 +30,7 @@ pub fn router() -> Router<AppState> {
         .route("/revoke/{device_id}", post(revoke_device_path))
         .route("/settings", get(get_settings))
         .route("/settings", post(update_settings))
+        .route("/audit", get(get_audit_logs))
         // Phase-4 Bulk & Device management
         .route("/bulk-approve", post(approve_bulk))
         .route("/bulk-deny", post(deny_bulk))
