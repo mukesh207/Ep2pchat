@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "vite",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "tsc && vite build",
+    "beforeBuildCommand": "",
     "frontendDist": "../dist"
   },
   "app": {
