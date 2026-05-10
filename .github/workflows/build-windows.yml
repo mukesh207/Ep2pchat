@@ -32,7 +32,10 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      - name: Build Frontend & Tauri
+      - name: Build Frontend
+        run: npm run build
+
+      - name: Build Tauri
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

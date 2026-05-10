@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "app.trustline.desktop",
   "build": {
-    "beforeDevCommand": "./node_modules/.bin/vite",
+    "beforeDevCommand": "vite",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "./node_modules/.bin/tsc && ./node_modules/.bin/vite build",
+    "beforeBuildCommand": "tsc && vite build",
     "frontendDist": "../dist"
   },
   "app": {
