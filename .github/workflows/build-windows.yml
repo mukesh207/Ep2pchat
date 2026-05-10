@@ -1,5 +1,8 @@
 name: Build Trustline Windows
 
+permissions:
+  contents: write
+
 on:
   push:
     branches: [main]
