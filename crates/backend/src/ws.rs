@@ -384,7 +384,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, device_id: Uuid, clai
     let admin_task = if claims.role == "ADMIN" {
         let admin_subject = format!("admin.org.{}", org_id);
         let admin_tx = tx.clone();
-        if let Some(mut admin_sub) = state.nats.subscribe(admin_subject).await {
+        if let Some(mut admin_sub) = state.nats.subscribe(admin_subject.clone()).await {
             tokio::spawn(async move {
                 tracing::debug!(user_id = %user_id, subject = %admin_subject, "Subscribing admin to events");
                 while let Some(msg) = admin_sub.next().await {

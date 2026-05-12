@@ -307,7 +307,7 @@ pub async fn request_access(
                     ELSE 'pending_approval' 
                 END
              RETURNING id, status"
-        ).bind(org_id).bind(&email).bind(metadata).fetch_one(&mut *tx).await?;
+        ).bind(org_id).bind(email.clone()).bind(metadata).fetch_one(&mut *tx).await?;
 
         let user_id: Uuid = user_record.get("id");
         let status: String = user_record.get("status");
