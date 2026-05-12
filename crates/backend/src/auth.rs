@@ -286,10 +286,10 @@ pub async fn request_access(
     Json(payload): Json<RequestAccessPayload>,
 ) -> Result<Json<Value>, AppError> {
     let email = payload.email.trim().to_lowercase();
-    let (_, domain) = email.split_once('@').ok_or(AppError::BadRequest("Invalid email".into()))?;
-    let domain = domain.to_string();
+    let domain = email.split('@').last().ok_or(AppError::BadRequest("Invalid email".into()))?.to_string();
     let metadata = payload.metadata.unwrap_or(json!({}));
 
+    let email_for_closure = email.clone();
     let (user_id, org_id, status, access_code) = crate::db::with_rls_context(&state.db, Uuid::nil(), |tx| Box::pin(async move {
         let org_id: Uuid = sqlx::query(
             "INSERT INTO organizations (domain, name) VALUES ($1, $1) ON CONFLICT (domain) DO UPDATE SET domain=EXCLUDED.domain RETURNING id"
@@ -307,10 +307,23 @@ pub async fn request_access(
                     ELSE 'pending_approval' 
                 END
              RETURNING id, status"
-        ).bind(org_id).bind(email.clone()).bind(metadata).fetch_one(&mut *tx).await?;
+        ).bind(org_id).bind(&email_for_closure).bind(&metadata).fetch_one(&mut *tx).await?;
 
         let user_id: Uuid = user_record.get("id");
         let status: String = user_record.get("status");
+        
+        tracing::info!("Assigned org_id: {} to user: {} (email: {})", org_id, user_id, email_for_closure);
+
+        // Audit: New admission request
+        let _ = sqlx::query(
+            "INSERT INTO audit_logs (org_id, actor_id, action, details) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(org_id)
+        .bind(user_id)
+        .bind("ADMISSION_REQUEST")
+        .bind(json!({ "email": email_for_closure, "status": status, "metadata": metadata }))
+        .execute(&mut *tx)
+        .await?;
         
         Ok((user_id, org_id, status, build_access_code(user_id)))
     })).await?;

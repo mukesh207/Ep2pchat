@@ -2,7 +2,6 @@ use crate::auth::AuthContext;
 use crate::AppState;
 use axum::{
     extract::{State},
-    http::StatusCode,
     routing::{get, post},
     Json, Router,
 };

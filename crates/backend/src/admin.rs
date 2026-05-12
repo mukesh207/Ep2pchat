@@ -306,6 +306,7 @@ pub async fn get_pending_users(
     }
 
     // RLS: org_id scoped
+    tracing::info!("Fetching pending users for org_id: {}", auth.claims.org_id);
     let records = crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
         Box::pin(async move {
             sqlx::query(
@@ -323,6 +324,7 @@ pub async fn get_pending_users(
 
     match records {
         Ok(rows) => {
+            tracing::info!("Found {} pending users for org_id: {}", rows.len(), auth.claims.org_id);
             let users: Vec<Value> = rows
                 .iter()
                 .map(|row| {

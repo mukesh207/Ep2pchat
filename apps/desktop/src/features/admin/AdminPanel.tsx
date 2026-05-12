@@ -140,7 +140,7 @@ function AdminPanel({ onBack }: { onBack: () => void }) {
               {item.label}
               {item.key === "ADMISSION" && tab !== "ADMISSION" && data.length > 0 && Array.isArray(data) && (
                 <span className="ml-auto h-5 w-5 rounded-full bg-accent-amber/10 text-accent-amber text-[10px] flex items-center justify-center border border-accent-amber/20 font-bold">
-                  {data.length}
+                  {tab === "COMMAND" ? (Array.isArray(data[0]) ? data[0].length : 0) : data.length}
                 </span>
               )}
             </button>
