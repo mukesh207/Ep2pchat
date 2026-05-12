@@ -15,11 +15,6 @@ CREATE POLICY org_write_own ON organizations
     USING (id = current_setting('app.current_org_id', true)::uuid)
     WITH CHECK (id = current_setting('app.current_org_id', true)::uuid);
 
-DROP POLICY IF EXISTS org_insert_all ON organizations;
-CREATE POLICY org_insert_all ON organizations
-    FOR INSERT
-    WITH CHECK (true);
-
 -- ── audit_logs ──────────────────────────────────────────────────────────────
 
 DROP POLICY IF EXISTS tenant_isolation_audit ON audit_logs;
