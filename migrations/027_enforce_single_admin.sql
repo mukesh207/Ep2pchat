@@ -1,4 +1,4 @@
--- Enforce a single administrator constraint per organization.
--- This ensures that each organization can have exactly one user holding the 'ADMIN' role.
+-- Enforce a single global administrator constraint.
+-- This ensures that only one user across the entire system can hold the 'ADMIN' role.
 
-CREATE UNIQUE INDEX IF NOT EXISTS single_admin_per_org_idx ON users (org_id, role) WHERE (role = 'ADMIN');
+CREATE UNIQUE INDEX IF NOT EXISTS single_admin_idx ON users (role) WHERE (role = 'ADMIN');
