@@ -14,7 +14,7 @@ export function useAppInitialization() {
   const { addToast } = useToast();
   const { session, setSession, localKeys, setLocalKeys, setMyDeviceId, logout: storeLogout } = useAuthStore();
   const { setContacts, setPresenceByContact, setMessages, setLastMessageByContact, setTypingByContact, setUnreadByContact } = useChatStore();
-  const { setRootView } = useUIStore();
+  const { setRootView, triggerAdminRefresh } = useUIStore();
   
   const activeContactId = useRef<string | null>(null);
   const localKeysRef = useRef<LocalKeys | null>(null);
@@ -122,6 +122,10 @@ export function useAppInitialization() {
           ...prev,
           [msg.payload.user_id as string]: msg.payload.status as any,
         }));
+      }
+      if (msg.type === "ADMISSION_REQUEST") {
+        addToast(`New admission request from ${msg.payload.email}`, "info");
+        triggerAdminRefresh();
       }
       if (msg.type === "STORY_KEY_SHARE") {
         handlersRef.current.handleStoryKeyShare(msg.payload);

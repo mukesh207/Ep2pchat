@@ -379,6 +379,29 @@ async fn handle_socket(socket: WebSocket, state: AppState, device_id: Uuid, clai
         tokio::spawn(async {})
     };
 
+    // ── Admin Subscriber ────────────────────────────────────────────────
+    // Subscribe to organization-wide administrative events (e.g. admission requests)
+    let admin_task = if claims.role == "ADMIN" {
+        let admin_subject = format!("admin.org.{}", org_id);
+        let admin_tx = tx.clone();
+        if let Some(mut admin_sub) = state.nats.subscribe(admin_subject).await {
+            tokio::spawn(async move {
+                tracing::debug!(user_id = %user_id, subject = %admin_subject, "Subscribing admin to events");
+                while let Some(msg) = admin_sub.next().await {
+                    if let Ok(payload_str) = std::str::from_utf8(&msg.payload) {
+                        if admin_tx.send(Message::Text(payload_str.to_string().into())).is_err() {
+                            break;
+                        }
+                    }
+                }
+            })
+        } else {
+            tokio::spawn(async {})
+        }
+    } else {
+        tokio::spawn(async {})
+    };
+
     // ── Outbound: channel → WebSocket ───────────────────────────────────
     let mut send_task = tokio::spawn(async move {
         while let Some(message) = rx.recv().await {
@@ -439,11 +462,13 @@ async fn handle_socket(socket: WebSocket, state: AppState, device_id: Uuid, clai
             recv_task.abort();
             nats_task.abort();
             presence_task.abort();
+            admin_task.abort();
         },
         _ = (&mut recv_task) => {
             send_task.abort();
             nats_task.abort();
             presence_task.abort();
+            admin_task.abort();
         },
     };
 

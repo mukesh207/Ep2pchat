@@ -86,7 +86,7 @@ export function AdmissionQueue({ data, onApprove, onReject, isLoading }: Admissi
                       <div className="text-[13px] font-black text-text-primary uppercase tracking-tight group-hover:text-accent-cyan transition-colors">{u.username || u.email}</div>
                       <div className="flex items-center gap-4 text-[9px] font-mono text-text-muted uppercase">
                         <span className="flex items-center gap-1.5"><Shield size={10} /> {u.email}</span>
-                        <span className="flex items-center gap-1.5"><Clock size={10} /> REC_ {new Date(u.created_at || Date.now()).toLocaleTimeString()}</span>
+                        <span className="flex items-center gap-1.5"><Clock size={10} /> REC_ {new Date(u.requested_at || Date.now()).toLocaleTimeString()}</span>
                       </div>
                     </div>
                   </div>

@@ -290,7 +290,7 @@ pub async fn request_access(
     let domain = domain.to_string();
     let metadata = payload.metadata.unwrap_or(json!({}));
 
-    let (user_id, status, access_code) = crate::db::with_rls_context(&state.db, Uuid::nil(), |tx| Box::pin(async move {
+    let (user_id, org_id, status, access_code) = crate::db::with_rls_context(&state.db, Uuid::nil(), |tx| Box::pin(async move {
         let org_id: Uuid = sqlx::query(
             "INSERT INTO organizations (domain, name) VALUES ($1, $1) ON CONFLICT (domain) DO UPDATE SET domain=EXCLUDED.domain RETURNING id"
         ).bind(&domain).fetch_one(&mut *tx).await?.get("id");
@@ -300,13 +300,46 @@ pub async fn request_access(
         let user_record = sqlx::query(
             "INSERT INTO users (org_id, email, status, request_metadata) 
              VALUES ($1, $2, 'pending_approval', $3) 
-             ON CONFLICT (org_id, email) DO UPDATE SET request_metadata = EXCLUDED.request_metadata
+             ON CONFLICT (org_id, email) DO UPDATE SET 
+                request_metadata = EXCLUDED.request_metadata,
+                status = CASE 
+                    WHEN users.status = 'active' THEN 'active' 
+                    ELSE 'pending_approval' 
+                END
              RETURNING id, status"
         ).bind(org_id).bind(&email).bind(metadata).fetch_one(&mut *tx).await?;
 
         let user_id: Uuid = user_record.get("id");
-        Ok((user_id, user_record.get::<String, _>("status"), build_access_code(user_id)))
+        let status: String = user_record.get("status");
+        
+        Ok((user_id, org_id, status, build_access_code(user_id)))
     })).await?;
+
+    tracing::info!(
+        email = %email,
+        org_id = %org_id,
+        user_id = %user_id,
+        status = %status,
+        "Access request processed"
+    );
+
+    // Broadcast to admins in the same organization for real-time UI updates
+    let admin_subject = format!("admin.org.{}", org_id);
+    let event = json!({
+        "type": "ADMISSION_REQUEST",
+        "payload": {
+            "id": user_id,
+            "org_id": org_id,
+            "email": email,
+            "status": status,
+            "requested_at": chrono::Utc::now(),
+            "access_code": access_code
+        }
+    });
+
+    if let Ok(payload_bytes) = serde_json::to_vec(&event) {
+        state.nats.publish(admin_subject, payload_bytes).await;
+    }
 
     Ok(Json(json!({"status": if status == "active" { "active" } else { "pending" }, "user_id": user_id, "access_code": access_code})))
 }

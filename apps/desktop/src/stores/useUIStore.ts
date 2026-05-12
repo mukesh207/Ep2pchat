@@ -9,6 +9,7 @@ interface UIState {
   showIdentityModal: boolean;
   securityStatus: 'protected' | 'alert' | 'danger';
   isNarrowLayout: boolean;
+  adminRefreshTrigger: number;
   
   setRootView: (view: RootView) => void;
   setSidebarWidthPx: (width: number) => void;
@@ -17,6 +18,7 @@ interface UIState {
   setShowIdentityModal: (show: boolean) => void;
   setSecurityStatus: (status: 'protected' | 'alert' | 'danger') => void;
   setIsNarrowLayout: (isNarrow: boolean) => void;
+  triggerAdminRefresh: () => void;
 }
 
 const SIDEBAR_DEFAULT_WIDTH = 260;
@@ -29,6 +31,7 @@ export const useUIStore = create<UIState>((set) => ({
   showIdentityModal: false,
   securityStatus: 'protected',
   isNarrowLayout: false,
+  adminRefreshTrigger: 0,
 
   setRootView: (rootView) => set({ rootView }),
   setSidebarWidthPx: (sidebarWidthPx) => set({ sidebarWidthPx }),
@@ -37,4 +40,5 @@ export const useUIStore = create<UIState>((set) => ({
   setShowIdentityModal: (showIdentityModal) => set({ showIdentityModal }),
   setSecurityStatus: (securityStatus) => set({ securityStatus }),
   setIsNarrowLayout: (isNarrowLayout) => set({ isNarrowLayout }),
+  triggerAdminRefresh: () => set((state) => ({ adminRefreshTrigger: state.adminRefreshTrigger + 1 })),
 }));

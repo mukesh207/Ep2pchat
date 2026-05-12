@@ -3,6 +3,7 @@ import { Activity, Shield, Users, ClipboardList, Settings, LogOut, AlertTriangle
 import * as api from "../../infrastructure/api";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuthStore } from "../../stores/useAuthStore";
+import { useUIStore } from "../../stores/useUIStore";
 
 // Modular Components
 import { CommandCenter } from "./dashboard/CommandCenter";
@@ -23,6 +24,7 @@ function AdminPanel({ onBack }: { onBack: () => void }) {
   const [selectedUser, setSelectedUser] = useState<any | null>(null);
   const [userDevices, setUserDevices] = useState<any[]>([]);
   const { session } = useAuthStore();
+  const { adminRefreshTrigger } = useUIStore();
 
   const fetchData = async () => {
     setIsLoading(true);
@@ -57,7 +59,7 @@ function AdminPanel({ onBack }: { onBack: () => void }) {
 
   useEffect(() => {
     fetchData();
-  }, [tab]);
+  }, [tab, adminRefreshTrigger]);
 
   const handleApprove = async (id: string) => {
     try {
