@@ -22,7 +22,10 @@ cd "$PROJ_DIR"
 
 info "Syncing code to EC2 (${EC2_HOST})..."
 rsync -avz --progress \
-    --exclude='target/' \
+    --include='target/' \
+    --include='target/release/' \
+    --include='target/release/backend' \
+    --exclude='target/*' \
     --exclude='node_modules/' \
     --exclude='.git/' \
     --exclude='.env*' \
