@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { X, Settings, Loader2, Save, Monitor, Smartphone, ShieldOff } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useAuthStore } from "../stores/useAuthStore";
@@ -32,6 +32,13 @@ function AppInternal() {
   const confirm = useConfirm();
   const { rootView, setRootView, showUserSettings, setShowUserSettings, showIdentityModal, setShowIdentityModal } = useUIStore();
   const { session, myDeviceId, localKeys } = useAuthStore();
+  
+  // ChatArena and useChat hooks expect localKeys as a ref to avoid stale closures.
+  const localKeysRef = useRef(localKeys);
+  useEffect(() => {
+    localKeysRef.current = localKeys;
+  }, [localKeys]);
+
   const { 
     activeContact, 
     messages, 
@@ -75,7 +82,7 @@ function AppInternal() {
       <OnboardingWizard
         email={session.email}
         onComplete={(username, department) => {
-          handleAuthenticated(session.userId, session.orgId, session.email, myDeviceId!, {} as any, session.role, username, department);
+          handleAuthenticated(session.userId, session.orgId, session.email, myDeviceId!, localKeys!, session.role, username, department);
         }}
       />
     );
@@ -97,7 +104,7 @@ function AppInternal() {
         setMessages={setMessages}
         typingByContact={typingByContact}
         presenceByContact={presenceByContact}
-        localKeys={localKeys}
+        localKeys={localKeysRef}
         setLastMessageByContact={setLastMessageByContact}
         showContactDetail={() => setShowIdentityModal(true)}
       />
@@ -182,10 +189,10 @@ function AppInternal() {
       </AnimatePresence>
 
       {/* Identity Modal */}
-      {showIdentityModal && activeContact && (
+      {showIdentityModal && activeContact && localKeys && (
         <IdentityModal
           contact={activeContact}
-          localKeys={useAuthStore.getState().localKeys!}
+          localKeys={localKeys}
           onClose={() => setShowIdentityModal(false)}
         />
       )}
