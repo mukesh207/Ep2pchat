@@ -428,6 +428,7 @@ pub async fn login_verify(
     // 3. Verify signature
     let sig_bytes = STANDARD.decode(&payload.signature).map_err(|_| AppError::BadRequest("Invalid signature format".into()))?;
     if !crypto_core::verify_detached(&sig_bytes, &challenge_bytes, &pubkey) {
+        tracing::error!("Signature verification failed! sig len: {}, challenge len: {}, pubkey: {:?}", sig_bytes.len(), challenge_bytes.len(), pubkey.as_ref());
         return Err(AppError::Unauthorized("Signature verification failed".into()));
     }
 
