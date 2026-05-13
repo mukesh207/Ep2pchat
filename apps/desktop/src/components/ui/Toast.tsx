@@ -27,8 +27,14 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   const nextId = useRef(0);
 
   const addToast = useCallback((message: string, variant: ToastVariant = "info") => {
-    const id = nextId.current++;
-    setToasts((prev) => [...prev, { id, message, variant }]);
+    setToasts((prev) => {
+      // Prevent duplicate toasts if the same message and variant are already active
+      const isDuplicate = prev.some(t => t.message === message && t.variant === variant);
+      if (isDuplicate) return prev;
+
+      const id = nextId.current++;
+      return [...prev, { id, message, variant }];
+    });
   }, []);
 
   const removeToast = useCallback((id: number) => {

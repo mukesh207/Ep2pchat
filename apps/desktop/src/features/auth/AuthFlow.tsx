@@ -35,6 +35,7 @@ export default function AuthFlow({
 
   const [accessCode, setAccessCode] = useState("");
   const [isCheckingApproval, setIsCheckingApproval] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const localKeys = useRef<any>(null);
   const myDeviceId = useRef<string | null>(null);
@@ -92,6 +93,8 @@ export default function AuthFlow({
 
   const handleRequestAccess = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
+    setIsSubmitting(true);
     setIsMaintenance(false);
     try {
       const res = await api.requestAccess(email);
@@ -139,10 +142,14 @@ export default function AuthFlow({
       } else {
           addToast(appErr.getFriendlyMessage(), "error");
       }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
   const handleLogin = async (loginEmail: string, uid: string) => {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
     setIsMaintenance(false);
     try {
       const challengeRes = await api.loginChallenge(loginEmail);
@@ -192,6 +199,8 @@ export default function AuthFlow({
       } else {
         addToast(appErr.getFriendlyMessage(), "error");
       }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -231,11 +240,13 @@ export default function AuthFlow({
   };
 
   const handleRegisterDevice = async () => {
+    if (isSubmitting) return;
     if (!userId || !accessCode) {
       addToast("Missing access code. Please request access again.", "error");
       return;
     }
     setView("LOADING");
+    setIsSubmitting(true);
     try {
       // 1. Generate keys locally
       setLoadingStep("Generating cryptographic identity...");
@@ -276,6 +287,8 @@ export default function AuthFlow({
       console.error("Registration failed:", appErr);
       setView("REGISTER");
       addToast(appErr.getFriendlyMessage(), "error");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -297,6 +310,8 @@ export default function AuthFlow({
 
 
   const handleAccountSelect = (selectedEmail: string) => {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
     setEmail(selectedEmail);
     // Automatically trigger access request for the selected email
     void api.requestAccess(selectedEmail).then((res) => {
@@ -310,6 +325,8 @@ export default function AuthFlow({
       }
     }).catch(err => {
       addToast(err.message || "Failed to reach server for selected account.", "error");
+    }).finally(() => {
+      setIsSubmitting(false);
     });
   };
 
@@ -326,7 +343,7 @@ export default function AuthFlow({
       isCapsLock={isCapsLock}
       isBootstrapMode={isBootstrapMode}
       onKeyDown={handleKeyDown}
-      isOffline={isOffline}
+      isOffline={isOffline || isSubmitting}
       isMaintenance={isMaintenance}
       loadingStep={loadingStep}
       savedAccounts={savedAccounts}

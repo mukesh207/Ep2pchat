@@ -42,8 +42,13 @@ export class AppError extends Error {
             case ErrorCategory.NETWORK:
                 return "Cannot connect to server. Please check your internet connection.";
             case ErrorCategory.AUTH:
+                // Use the raw message if it's more specific than "Unauthorized"
+                if (this.message && this.message !== "Unauthorized" && this.message !== "Request failed with status 401") {
+                    return this.message;
+                }
                 return "Your session has expired. Please log in again.";
             case ErrorCategory.FORBIDDEN:
+
                 return "You don't have permission to perform this action.";
             case ErrorCategory.MAINTENANCE:
                 return "The server is currently undergoing maintenance. Please try again later.";

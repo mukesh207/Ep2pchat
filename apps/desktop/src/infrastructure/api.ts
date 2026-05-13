@@ -32,7 +32,10 @@ export async function requestJson(path: string, init?: RequestInit) {
     if (!res.ok) {
         const msg = data?.error || `Request failed with status ${res.status}`;
         
-        if (res.status === 401) throw new AppError(msg, ErrorCategory.AUTH);
+        if (res.status === 401) {
+            setToken(""); // Clear invalid/expired token immediately
+            throw new AppError(msg, ErrorCategory.AUTH);
+        }
         if (res.status === 403) throw new AppError(msg, ErrorCategory.FORBIDDEN);
         if (msg === "MAINTENANCE_MODE") throw new AppError(msg, ErrorCategory.MAINTENANCE);
         if (res.status >= 500) throw new AppError(msg, ErrorCategory.SERVER);
