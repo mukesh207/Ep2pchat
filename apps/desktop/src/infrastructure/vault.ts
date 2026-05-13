@@ -108,8 +108,17 @@ export async function initVault() {
         // Pass directly to SQLCipher — never store it anywhere in JS
         const openedDb = await Database.load("sqlite:trustline.db");
         try {
+            // 1. Initialise SQLCipher Encryption
             await openedDb.execute(`PRAGMA key = "x'${passphrase}'"`);
             await openedDb.execute("PRAGMA cipher_page_size = 4096");
+            
+            // 2. Configure Concurrency & Integrity (Critical for Windows)
+            await openedDb.execute("PRAGMA journal_mode = WAL");
+            await openedDb.execute("PRAGMA synchronous = NORMAL");
+            await openedDb.execute("PRAGMA busy_timeout = 10000");
+            await openedDb.execute("PRAGMA foreign_keys = ON");
+            
+            // 3. Verify access
             await openedDb.select("SELECT count(*) FROM sqlite_master");
         } catch (e: unknown) {
             throw new Error("[vault] Vault decrypt failed: " + describeError(e));

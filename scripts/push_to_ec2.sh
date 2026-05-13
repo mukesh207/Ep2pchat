@@ -25,7 +25,7 @@ rsync -avz --progress \
     --include='target/' \
     --include='target/release/' \
     --include='target/release/backend' \
-    --exclude='target/*' \
+    --exclude='target/**' \
     --exclude='node_modules/' \
     --exclude='.git/' \
     --exclude='.env*' \

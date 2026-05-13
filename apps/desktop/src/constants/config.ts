@@ -8,24 +8,30 @@ function trimTrailingSlash(value: string): string {
 
 /** 
  * API Base URL for all REST requests. 
- * Defaults to '/api/v1' for same-origin proxying in development.
+ * Defaults to '/api/v1' for same-origin proxying in development,
+ * and the production backend for built applications.
  */
 export const API_BASE_URL = (() => {
     const configured = import.meta.env.VITE_API_BASE_URL?.trim();
-    return configured ? trimTrailingSlash(configured) : "/api/v1";
+    if (configured) return trimTrailingSlash(configured);
+    
+    return import.meta.env.DEV ? "/api/v1" : "https://api.encryptedchat.in/api/v1";
 })();
 
 /** 
  * WebSocket URL for real-time messaging.
- * Automatically resolves to same-origin wss/ws if not explicitly configured.
+ * Automatically resolves to production backend if not configured.
  */
 export const WS_BASE_URL = (() => {
     const configured = import.meta.env.VITE_WS_BASE_URL?.trim();
     if (configured) return trimTrailingSlash(configured);
     
-    // Auto-detect protocol and host for local dev or same-domain production
-    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    return `${protocol}://${window.location.host}/ws`;
+    if (import.meta.env.DEV) {
+        const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+        return `${protocol}://${window.location.host}/ws`;
+    }
+    
+    return "wss://api.encryptedchat.in/ws";
 })();
 
 /** Application version injected during the build process. */
