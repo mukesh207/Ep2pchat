@@ -66,10 +66,12 @@ export async function processIncomingMessage(
             conversationId
         );
 
-        await saveRatchetSession(conversationId, decResult.new_session_json).catch((err) => {
-            console.error("[ratchet] CRITICAL: failed to persist session state for", conversationId, "— session may desync:", err);
+        try {
+            await saveRatchetSession(conversationId, decResult.new_session_json);
+        } catch (err) {
+            console.error("[ratchet] CRITICAL: failed to persist session state for", conversationId, "— stopping to prevent desync:", err);
             throw new Error(`Failed to save ratchet session: ${err}`);
-        });
+        }
 
         return {
             conversationId,

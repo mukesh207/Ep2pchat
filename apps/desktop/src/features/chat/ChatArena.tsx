@@ -161,17 +161,11 @@ export default function ChatArena({
       };
 
       const result = await crypto.ratchetEncrypt(sessionJson, JSON.stringify(payload), activeContact.id);
-      await vault.saveRatchetSession(activeContact.id, result.new_session_json).catch(() => {});
-
-      socket.send("MESSAGE_SEND", {
-        temp_id: myMsg.id,
-        recipient_device_id: targetDevice.device_id,
-        ciphertext: result.ciphertext,
-        ephemeral_public_key: ephemeralPk ?? null,
-        used_opk_id: targetDevice.one_time_pre_key?.key_id ?? null,
-        header: result.header,
+      await vault.saveRatchetSession(activeContact.id, result.new_session_json).catch((e) => {
+        console.warn("[vault] Failed to persist session, message may desync later", e);
       });
 
+      // 1. Persist to local vault FIRST
       try {
         await vault.saveMessage({
           id: myMsg.id,
@@ -185,7 +179,21 @@ export default function ChatArena({
           message_status: "sending",
           parent_id: myMsg.parent_id,
         });
-      } catch {}
+      } catch (e) {
+        console.error("[vault] Failed to save message to local vault:", e);
+        addToast("Local database error. Message may not be saved.", "warning");
+      }
+
+      // 2. Transmit via socket
+      socket.send("MESSAGE_SEND", {
+        temp_id: myMsg.id,
+        recipient_device_id: targetDevice.device_id,
+        ciphertext: result.ciphertext,
+        ephemeral_public_key: ephemeralPk ?? null,
+        used_opk_id: targetDevice.one_time_pre_key?.key_id ?? null,
+        header: result.header,
+      });
+
       setLastMessageByContact((prev: any) => ({ ...prev, [activeContact.id]: myMsg.text }));
       setMessages((prev: any) => [...prev, myMsg]); 
       setInputText("");
