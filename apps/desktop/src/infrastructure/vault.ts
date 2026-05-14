@@ -106,7 +106,7 @@ export async function initVault() {
         }
 
         // Pass directly to SQLCipher — never store it anywhere in JS
-        const dbPath = "sqlite:trustline.db?_busy_timeout=10000";
+        const dbPath = "sqlite:trustline.db";
         const openedDb = await Database.load(dbPath);
         try {
             // 1. Initialise SQLCipher Encryption
