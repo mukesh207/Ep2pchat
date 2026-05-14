@@ -192,8 +192,19 @@ export default function AuthFlow({
         setUserId(uid);
         setView("REGISTER");
       }
-    } catch (err) {
+    } catch (err: any) {
       const appErr = handleError(err, "handleLogin");
+      
+      // If signature fails, the local identity is out of sync with the server.
+      // We must force a re-registration to generate fresh, valid anchors.
+      if (appErr.message?.includes("Signature verification failed")) {
+          console.warn("[auth] Signature mismatch detected. Forcing re-registration.");
+          addToast("Secure identity mismatch. Re-provisioning required.", "info");
+          setUserId(uid);
+          setView("REGISTER");
+          return;
+      }
+
       if (appErr.message === "MAINTENANCE_MODE") {
         setIsMaintenance(true);
       } else {
