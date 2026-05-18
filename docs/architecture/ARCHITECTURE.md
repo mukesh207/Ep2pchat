@@ -1,68 +1,70 @@
 # Trustline: Technical Architecture & Cyber Security Blueprint
 
-**Document Version:** 1.0
-**Author:** Senior Technical Architect & Lead Cybersecurity Engineer
-**Date:** March 2026
+**Document Version:** 2.0
+**Status:** IMPLEMENTED
+**Date:** May 2026
 
-This document outlines the state-of-the-art technological stack and architectural design to realize the vision of "Trustline" described in `CONCEPT.md`. The focus is absolute zero-trust, memory safety, hyper-scalability, and uncompromised cryptographic integrity.
-
----
-
-## 1. The Core Infrastructure (The "Mailroom")
-
-The backend architecture focuses on high-concurrency, memory safety, and acting strictly as a "blind router." It will not be able to decrypt payloads.
-
-*   **Core Routing Engine:** **Rust (with Tokio)** 
-    *   *Why?* Rust guarantees memory safety (preventing buffer overflows and common vulnerabilities) while offering C-level performance. Tokio provides an asynchronous runtime capable of handling millions of concurrent WebSocket connections efficiently.
-*   **Message Broker / PubSub:** **NATS JetStream**
-    *   *Why?* Far lighter and faster than Kafka. NATS is designed for distributed, secure, multi-tenant communications. It perfectly fits the model of routing encrypted blobs with ephemeral metadata.
-*   **Primary Database (User/Org Metadata):** **PostgreSQL**
-    *   *Why?* Rock-solid reliability. We will heavily utilize Postges' **Row-Level Security (RLS)** to enforce tenant isolation at the database layer (making cross-tenant leakage virtually impossible).
-*   **Testing & CI/CD Pipelines:** **Playwright & GitHub Actions**
-    *   *Why?* End-to-end integration tests explicitly verifying WebSocket connections, multi-tenant boundaries, and message delivery to catch regressions.
-
-## 2. Advanced Cryptography (The "Locked Briefcases")
-
-We will utilize the modern gold standards for secure communication. We avoid rolling our own crypto at all costs.
-
-*   **1-to-1 End-to-End Encryption:** **The Signal Protocol (Double Ratchet Algorithm + X3DH)**
-    *   *Why?* The industry standard for E2EE, providing Forward Secrecy and Post-Compromise Security.
-*   **Multi-Party (Group) Encryption:** **Messaging Layer Security (MLS - RFC 9420)**
-    *   *Why?* Standardized by the IETF, MLS scales securely to thousands of members in a group without the severe performance bottleneck of traditional pairwise encryption (which the Signal protocol struggles with in giant groups).
-*   **Cryptographic Primitives:** **libsodium** (specifically `ed25519` for signatures and `XChaCha20-Poly1305` for symmetric encryption).
-
-## 3. Passwordless Authentication (The "Unforgeable ID Badge")
-
-Passwords are the weakest link and will be completely eliminated from the entire stack.
-
-*   **Authentication Protocol:** **WebAuthn / FIDO2 (Passkeys)**
-    *   *Why?* Binding authentication hardware securely to user identities. The private keys never leave the device’s Secure Enclave (Apple Secure Enclave, Android Titan M, Windows TPM). 
-*   **Session Management:** **Opaquely Signed PASE (Password-Authenticated Key Exchange) / Short-lived JWTs**
-    *   *Why?* Sessions are extremely short-lived. Long-term device trust is maintained via cryptographic handshakes with the device's hardware enclave, not a long-living database token.
-
-## 4. Client Applications (The "Workspace")
-
-Client-side execution mapping directly onto bare-metal hardware features is critical for both snappy UI experiences and cryptographic operations.
-
-*   **Desktop Applications (Windows / Mac / Linux):** **Tauri + React/Svelte**
-    *   *Why?* Electron is bloated and has a large attack surface. Tauri v2 uses the OS's native webview and runs a lightweight Rust backend locally. This gives the application system-level capabilities (like secure local storage via SQLCipher + FTS5) with maximum safety.
-*   **Mobile Applications (iOS / Android):** **React Native (with JSI/Turbomodules) or Native (Swift/Kotlin)**
-    *   *Why?* To bridge directly into native cryptography engines. We will use native modules heavily so mathematical operations aren't bottlenecked by the JavaScript thread.
-
-## 5. Security Posture & Deployment
-
-*   **Containerization & Orchestration:** **Docker & Kubernetes** 
-    *   *Why?* Allows for isolated, microservice-based deployments in any enterprise’s on-premise hardware or private cloud.
-*   **Networking Security Engine:** **Cilium (eBPF)**
-    *   *Why?* For Kubernetes deployments, Cilium uses eBPF in the Linux kernel to enforce deep packet inspection, network isolation, and transparent encryption between microservices (using WireGuard).
-*   **Reverse Proxy / Load Balancer:** **Traefik or Envoy**
-    *   *Why?* Dynamic routing with automatic mTLS (mutual TLS) terminating edges.
-*   **Memory / State Wiping:** Secure allocators will be used in the client code to immediately scrub sensitive keys from RAM the moment they are no longer in use, defeating cold-boot and memory-dump attacks.
+This document outlines the state-of-the-art technological stack and architectural design that powers Trustline. The focus is absolute zero-trust, memory safety, hyper-scalability, and uncompromised cryptographic integrity.
 
 ---
 
-### Architectural Flow Summary
-1.  **Onboarding:** Admin approves user ID -> User registers device (FIDO2 Enclave generates keypair).
-2.  **Handshake:** User A wants to talk to User B -> Fetches User B's public pre-keys from the Server -> Initializes X3DH handshake to derive a shared secret.
-3.  **Messaging:** User A encrypts message with shared secret (Double Ratchet) -> Sends locked payload to Server (Rust + NATS) -> Server blindly routes payload to User B based on ephemeral UUIDs -> User B decrypts locally.
-4.  **Tear Down:** Server instantly discards routing metadata according to admin-defined retention SLA.
+## 1. System Overview
+
+Trustline is an enterprise communications platform operating as a **Zero-Knowledge Blind Router**. The server infrastructure facilitates communication, manages authentication, and queues offline messages, but it is cryptographically incapable of reading message payloads. All cryptographic operations occur exclusively on the end-user's device within a secure Rust environment.
+
+## 2. Core Infrastructure (Backend Engine)
+
+The backend prioritizes high-concurrency routing, strict database isolation, and memory safety.
+
+*   **Routing Engine & API:** **Rust (Axum + Tokio)**
+    *   *Implementation:* Rust guarantees memory safety, eliminating buffer overflow risks. Axum serves REST APIs (auth, keys, admin) and a high-performance WebSocket router for real-time messaging. Tokio efficiently handles thousands of concurrent WebSocket connections across worker threads.
+*   **Message Broker:** **NATS JetStream**
+    *   *Implementation:* Used for distributed pub/sub. When a user sends a message, it is published to NATS, which routes it across clustered backend nodes to the recipient's active WebSocket connection, or queues it if the recipient is offline.
+*   **Database (State & Metadata):** **PostgreSQL 16**
+    *   *Implementation:* Employs **Row-Level Security (RLS)** extensively. Every API request executes within the context of the user's Organization ID. RLS strictly prevents any cross-tenant data leakage at the Postgres engine level.
+*   **Database Access:** **SQLx**
+    *   *Implementation:* Provides compile-time checked SQL queries, ensuring schema mismatches are caught during the build process.
+
+## 3. Cryptographic Layer (The "Locked Briefcases")
+
+Trustline avoids rolling custom crypto, relying exclusively on heavily audited industry standards implemented in the `crypto_core` Rust library.
+
+*   **1-to-1 Encryption:** **Signal Protocol (X3DH + Double Ratchet)**
+    *   *Implementation:* 
+        *   **X3DH (Extended Triple Diffie-Hellman):** Establishes a shared secret between two users asynchronously.
+        *   **Double Ratchet Algorithm:** Derives unique, ephemeral keys for every single message. Provides Perfect Forward Secrecy (PFS) and Post-Compromise Security (self-healing after a key leak).
+*   **Cryptographic Primitives:** **libsodium (sodiumoxide)**
+    *   *Implementation:* X25519 (Key Exchange), Ed25519 (Signatures), and XChaCha20-Poly1305 (Symmetric Encryption).
+*   **Pre-Key Management:** The backend stores signed One-Time Pre-Keys (OTPKs). The client automatically replenishes these via the backend API when stocks run low.
+
+## 4. Authentication (Passwordless Identity)
+
+Trustline eliminates passwords completely to mitigate phishing and brute-force attacks.
+
+*   **Primary Auth:** **WebAuthn / FIDO2**
+    *   *Implementation:* Uses the `webauthn-rs` crate. Users authenticate using hardware authenticators (YubiKey, Apple TouchID, Windows Hello).
+*   **Session Management:** **JWT (JSON Web Tokens)**
+    *   *Implementation:* Short-lived JWTs authorize API and WebSocket connections. Tokens contain the Organization ID to dynamically scope database queries via RLS.
+
+## 5. Client Application (Desktop Workspace)
+
+*   **Application Framework:** **Tauri v2 + React 19**
+    *   *Implementation:* Tauri bundles a fast web frontend (React, Vite, Tailwind CSS 4) with a lightweight Rust backend operating natively on the desktop.
+*   **Inter-Process Communication (IPC):** 
+    *   *Implementation:* The React UI never handles private keys. It issues commands to the Tauri Rust process via IPC. The local Rust process handles all encryption/decryption and interacts with the OS secure enclave.
+*   **Local Storage:** **SQLCipher**
+    *   *Implementation:* Chat history is stored locally in an AES-256 encrypted SQLite database, allowing full-text search (FTS5) locally without sending plaintext to the cloud.
+
+## 6. Security Posture & Memory Safety
+
+*   **Zero-Knowledge Storage:** The server database only stores `encrypted_payload` (byte arrays).
+*   **Tenant Isolation:** Enforced by PostgreSQL RLS. A compromised backend API endpoint cannot fetch rows belonging to another organization.
+*   **Memory Scrubbing:** The `crypto_core` ensures cryptographic keys are dropped from RAM immediately after the symmetric ratchet step completes.
+
+## 7. High-Level Data Flow
+
+1. **Onboarding:** Admin creates a user. User registers via WebAuthn, generating an Identity Keypair. The Public Key is sent to the server.
+2. **Session Start (X3DH):** Alice wants to message Bob. Alice requests Bob's Identity Key and an OTPK from the Axum server. Alice computes the shared secret locally.
+3. **Messaging (Ratchet):** Alice encrypts the text. The payload is sent via WebSocket to Axum.
+4. **Routing:** Axum publishes the blob to NATS. NATS delivers it to Bob's WebSocket.
+5. **Decryption:** Bob's Tauri client receives the blob, steps the Double Ratchet forward, decrypts the message, and stores it in local SQLCipher.

@@ -221,6 +221,10 @@ async fn admin_bootstrap(
         return Err(AppError::Unauthorized("Invalid setup token".into()));
     }
 
+    if state.admin_bootstrap_consumed.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(AppError::Forbidden("Admin bootstrap token has already been consumed".into()));
+    }
+
     if !state.rate_limiter.check(&format!("admin-bootstrap:{}", email)) {
         return Err(AppError::Forbidden("Too many attempts".into()));
     }
@@ -258,6 +262,8 @@ async fn admin_bootstrap(
 
     sqlx::query("INSERT INTO sessions (jti, user_id, expires_at) VALUES ($1, $2, $3)")
         .bind(jti).bind(user_id).bind(expiration_dt).execute(&state.db).await?;
+
+    state.admin_bootstrap_consumed.store(true, std::sync::atomic::Ordering::SeqCst);
 
     let token = encode(&Header::default(), &claims, &EncodingKey::from_secret(state.jwt_secret.as_bytes()))
         .map_err(|e| AppError::Internal(e.to_string()))?;

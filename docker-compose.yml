@@ -24,7 +24,7 @@ services:
     command: ["-m", "8222", "--jetstream", "--store_dir", "/data"]
     ports:
       - "4222:4222"   # Client connections
-      - "8222:8222"   # HTTP monitoring
+      - "127.0.0.1:8222:8222"   # HTTP monitoring (restricted to localhost)
     volumes:
       - natsdata:/data
     healthcheck:

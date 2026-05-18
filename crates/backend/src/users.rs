@@ -92,6 +92,12 @@ pub async fn log_security_event(
         return Err(AppError::BadRequest("Invalid action".into()));
     }
 
+    // Security Fix: Validate details size to prevent storage exhaustion/DoS
+    let details_str = payload.details.to_string();
+    if details_str.len() > 4096 {
+        return Err(AppError::BadRequest("Payload too large".into()));
+    }
+
     crate::db::with_rls_context(&state.db, auth.claims.org_id, |tx| {
         Box::pin(async move {
             sqlx::query(
@@ -99,8 +105,8 @@ pub async fn log_security_event(
             )
             .bind(auth.claims.org_id)
             .bind(auth.claims.sub)
-            .bind(&payload.action)
-            .bind(&payload.details)
+            .bind(payload.action)
+            .bind(payload.details)
             .execute(&mut *tx)
             .await
         })

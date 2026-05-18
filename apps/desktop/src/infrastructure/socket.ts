@@ -77,15 +77,24 @@ export class TrustlineSocket {
 
         const url = new URL(this.baseUrl, window.location.href);
         if (this.currentDeviceId) url.searchParams.set("device_id", this.currentDeviceId);
+        
+        // Removed WS_AUTH_PROTOCOL_PREFIX to prevent JWT leakage in reverse proxy logs.
+        // Modern browsers log headers, so we send the token via an AUTH message after upgrade.
         const protocols = [WS_PROTOCOL_V1];
-        if (this.currentToken) {
-            protocols.push(`${WS_AUTH_PROTOCOL_PREFIX}${toBase64Url(this.currentToken)}`);
-        }
 
         this.ws = new WebSocket(url, protocols);
 
         this.ws.onopen = () => {
             this.backoffMs = BACKOFF_INITIAL_MS; // reset backoff on success
+            
+            // Immediately authenticate
+            if (this.currentToken) {
+                this.ws?.send(JSON.stringify({ 
+                    type: "AUTH", 
+                    payload: { token: this.currentToken } 
+                }));
+            }
+
             this.setState("CONNECTED");
             this.flushQueue();
             this.startHeartbeat();

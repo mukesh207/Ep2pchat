@@ -93,6 +93,8 @@ fn has_ws_protocol(headers: &HeaderMap, protocol: &str) -> bool {
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(tag = "type", content = "payload")]
 pub enum WsEnvelope {
+    #[serde(rename = "AUTH")]
+    Auth { token: String },
     #[serde(rename = "KEYS_REQUEST")]
     KeysRequest { target_user_id: Uuid },
     #[serde(rename = "MESSAGE_SEND")]
@@ -161,50 +163,55 @@ pub async fn ws_handler(
     headers: HeaderMap,
 ) -> Response {
     let token = extract_bearer_token(&headers).or_else(|| extract_token_from_subprotocol(&headers));
-    let Some(token) = token else {
-        return (StatusCode::UNAUTHORIZED, "Missing authentication token").into_response();
+    
+    let token_data = if let Some(token) = token {
+        match decode::<Claims>(
+            &token,
+            &DecodingKey::from_secret(state.jwt_secret.as_bytes()),
+            &Validation::default(),
+        ) {
+            Ok(data) => Some(data),
+            Err(_) => return (StatusCode::UNAUTHORIZED, "Invalid or expired token").into_response(),
+        }
+    } else {
+        None
     };
 
-    let token_data = match decode::<Claims>(
-        &token,
-        &DecodingKey::from_secret(state.jwt_secret.as_bytes()),
-        &Validation::default(),
-    ) {
-        Ok(data) => data,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "Invalid or expired token").into_response(),
-    };
+    if let Some(data) = &token_data {
+        // Session Revocation Check: Ensure JTI exists in database
+        let session_check = sqlx::query("SELECT 1 FROM sessions WHERE jti = $1")
+            .bind(data.claims.jti)
+            .fetch_optional(&state.db)
+            .await;
 
-    // Session Revocation Check: Ensure JTI exists in database
-    let session_check = sqlx::query("SELECT 1 FROM sessions WHERE jti = $1")
-        .bind(token_data.claims.jti)
-        .fetch_optional(&state.db)
-        .await;
-
-    if let Ok(None) | Err(_) = session_check {
-        return (StatusCode::UNAUTHORIZED, "Session has been revoked or logged out").into_response();
+        if let Ok(None) | Err(_) = session_check {
+            return (StatusCode::UNAUTHORIZED, "Session has been revoked or logged out").into_response();
+        }
     }
 
     let Some(device_id) = query.device_id else {
         return (StatusCode::BAD_REQUEST, "device_id is required").into_response();
     };
 
-    let device_check = sqlx::query(
-        "SELECT 1 FROM devices WHERE id = $1 AND user_id = $2 AND org_id = $3 AND is_active = TRUE",
-    )
-    .bind(device_id)
-    .bind(token_data.claims.sub)
-    .bind(token_data.claims.org_id)
-    .fetch_optional(&state.db)
-    .await;
+    if let Some(data) = &token_data {
+        let device_check = sqlx::query(
+            "SELECT 1 FROM devices WHERE id = $1 AND user_id = $2 AND org_id = $3 AND is_active = TRUE",
+        )
+        .bind(device_id)
+        .bind(data.claims.sub)
+        .bind(data.claims.org_id)
+        .fetch_optional(&state.db)
+        .await;
 
-    let Ok(Some(_)) = device_check else {
-        return (StatusCode::UNAUTHORIZED, "Device is not active for this session").into_response();
-    };
+        let Ok(Some(_)) = device_check else {
+            return (StatusCode::UNAUTHORIZED, "Device is not active for this session").into_response();
+        };
+    }
 
     let ws =
         if has_ws_protocol(&headers, WS_PROTOCOL_V1) { ws.protocols([WS_PROTOCOL_V1]) } else { ws };
 
-    ws.on_upgrade(move |socket| handle_socket(socket, state, device_id, token_data.claims))
+    ws.on_upgrade(move |socket| handle_socket(socket, state, device_id, token_data.map(|d| d.claims)))
 }
 
 // ── Core Socket Handler ─────────────────────────────────────────────────────
@@ -230,10 +237,61 @@ async fn broadcast_presence(state: &AppState, org_id: Uuid, user_id: Uuid, statu
     })).await;
 }
 
-async fn handle_socket(socket: WebSocket, state: AppState, device_id: Uuid, claims: Claims) {
+async fn handle_socket(socket: WebSocket, state: AppState, device_id: Uuid, mut claims: Option<Claims>) {
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
+    // ── Pre-Authentication Loop ─────────────────────────────────────────
+    if claims.is_none() {
+        tracing::debug!(device_id = %device_id, "WebSocket waiting for AUTH message");
+        while let Some(result) = ws_rx.next().await {
+            match result {
+                Ok(Message::Text(text)) => {
+                    if let Ok(WsEnvelope::Auth { token }) = serde_json::from_str::<WsEnvelope>(&text) {
+                        match decode::<Claims>(
+                            &token,
+                            &DecodingKey::from_secret(state.jwt_secret.as_bytes()),
+                            &Validation::default(),
+                        ) {
+                            Ok(data) => {
+                                // Session Revocation Check
+                                let session_check = sqlx::query("SELECT 1 FROM sessions WHERE jti = $1")
+                                    .bind(data.claims.jti)
+                                    .fetch_optional(&state.db)
+                                    .await;
+
+                                if let Ok(Some(_)) = session_check {
+                                    // Device ownership check
+                                    let device_check = sqlx::query(
+                                        "SELECT 1 FROM devices WHERE id = $1 AND user_id = $2 AND org_id = $3 AND is_active = TRUE",
+                                    )
+                                    .bind(device_id)
+                                    .bind(data.claims.sub)
+                                    .bind(data.claims.org_id)
+                                    .fetch_optional(&state.db)
+                                    .await;
+
+                                    if let Ok(Some(_)) = device_check {
+                                        claims = Some(data.claims);
+                                        let _ = tx.send(Message::Text(json!({"type": "AUTH_SUCCESS"}).to_string().into()));
+                                        break;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    let _ = tx.send(Message::Text(json!({"type": "ERROR", "payload": {"message": "Authentication required"}}).to_string().into()));
+                }
+                Ok(Message::Close(_)) => return,
+                _ => {}
+            }
+            // Send periodic Ping to keep connection alive during auth wait
+            let _ = ws_tx.send(Message::Ping(vec![].into())).await;
+        }
+    }
+
+    let Some(claims) = claims else { return; };
     let user_id = claims.sub;
     let org_id = claims.org_id;
 
@@ -243,7 +301,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, device_id: Uuid, clai
     tracing::info!(
         device_id = %device_id,
         user_id = %user_id,
-        "WebSocket connected"
+        "WebSocket authenticated and connected"
     );
 
     // Broadcast online presence
@@ -663,6 +721,10 @@ pub(crate) async fn handle_envelope(
     state: &AppState,
 ) {
     match envelope {
+        WsEnvelope::Auth { .. } => {
+            // AUTH is handled in the handle_socket initial loop.
+            // If it arrives here, the client is already authenticated.
+        }
         WsEnvelope::KeysRequest { target_user_id } => {
             let (_, sender_org_id) = match sender_context(state, sender_device_id) {
                 Ok(ctx) => ctx,

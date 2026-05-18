@@ -1,77 +1,69 @@
-# Trustline: Threat Model & Cryptographic Sequence Diagram
+# 🛡️ Trustline: Cryptographic Threat Model
 
-**Document Version:** 1.0
-**Context:** This document outlines the fundamental security boundaries of the Trustline application and defines the exact mathematical sequence required to establish an End-to-End Encrypted (E2EE) session between two users.
+**Version:** 2.0  
+**Updated:** May 2026
 
----
-
-## 1. The Threat Model (Rules of Engagement)
-
-Before implementing cryptography, we must explicitly define what we assume is secure and what we assume is compromised.
-
-### The "Trusted" Zone (What we rely on)
-*   **The User's Device (Hardware Enclave):** We trust that the Secure Enclave (e.g., Apple M-Series, TPM) on the physical device cannot have its private keys extracted.
-*   **The Application Binary:** We trust the Tauri/ReactNative application has not been modified by malware prior to execution.
-*   **The OS Sandbox:** We trust the operating system prevents other apps from reading our application's active RAM.
-
-### The "Untrusted" Zone (What we assume is compromised)
-*   **The Network (The Internet):** We assume all traffic between the User and the Server is being recorded by a hostile state actor.
-*   **The Server (The Mailroom):** We treat our own Rust routing server and PostgreSQL database as implicitly untrusted. Even if a malicious Admin dumps the entire database, they must not be able to read any messages.
-*   **The Future State of a Device:** We assume that eventually, a user's phone *will* be stolen or compromised. Our cryptography must ensure that a compromise tomorrow does not retroactively expose messages sent yesterday (Forward Secrecy).
+This document defines the threat model, attack vectors, and cryptographic mitigations for the Trustline E2EE platform.
 
 ---
 
-## 2. The Cryptographic Primitives
+## 1. System Assumptions
 
-We rely exclusively on the `libsodium` library to prevent implementation errors.
-*   **Identity Keys (IK):** Long-term `X25519` keypair representing the user's specific device.
-*   **Signed Pre-Keys (SPK):** Medium-term `X25519` keypair, signed by the Identity Key, rotated periodically (e.g., weekly).
-*   **One-Time Pre-Keys (OPK):** Short-term `X25519` keypairs used exactly once per initial session setup.
-*   **Symmetric Encryption:** `XChaCha20-Poly1305` for actually encrypting the payload.
-*   **KDF (Key Derivation Function):** `HKDF-SHA256` to derive shared secrets.
+1.  **Zero-Trust Server:** The Axum backend, PostgreSQL database, and NATS broker are considered "untrusted." A full breach of the server infrastructure MUST NOT yield plaintext user messages.
+2.  **Trusted Client Hardware:** The user's physical device (OS, RAM, Secure Enclave) is trusted during active use.
+3.  **Modern Cryptanalysis:** Algorithms assume resistance against standard classical computing attacks up to 256-bit symmetric strength.
+
+## 2. Threat Actors
+
+*   **TA1: Compromised Infrastructure Admin:** A rogue sysadmin with full database/shell access to the production servers.
+*   **TA2: Network Eavesdropper:** An attacker monitoring all transit traffic (ISP, public WiFi).
+*   **TA3: Device Thief:** An attacker who steals the physical hardware of a user.
+*   **TA4: Advanced Persistent Threat (APT):** An attacker capable of compromising long-term keys from memory.
 
 ---
 
-## 3. The Cryptographic Sequence (X3DH Flow)
+## 3. Cryptographic Mitigations
 
-This sequence explicitly maps out how User A (Alice) establishes a secure session with User B (Bob) when Bob is currently offline.
+### 3.1 Server Compromise (TA1)
+**Attack:** TA1 dumps the `encrypted_messages` PostgreSQL table.
+**Mitigation:** 
+- The server only holds `payload` columns encrypted via `XChaCha20-Poly1305`.
+- Keys are never transmitted to the server. The server acts strictly as a blind router.
 
-```mermaid
-sequenceDiagram
-    participant Alice Device
-    participant Server (Mailroom)
-    participant Bob Device
+### 3.2 Network Interception (TA2)
+**Attack:** TA2 intercepts WebSocket traffic.
+**Mitigation:**
+- All traffic is wrapped in standard TLS 1.3 (via Traefik).
+- Even if TLS is stripped, the inner payload is secured by the Double Ratchet algorithm, rendering intercepted packets useless without the client's current ephemeral keys.
 
-    %% Setup Phase
-    Bob Device->>Server (Mailroom): Uploads Public Keys: [IK_B, SPK_B, Sig(SPK_B), OPK_B[]]
-    Note over Server (Mailroom): Server stores Bob's public keys. <br> Private keys NEVER leave Bob's device.
+### 3.3 Device Theft (TA3)
+**Attack:** TA3 physically steals an unlocked laptop or extracts the SQLite database.
+**Mitigation:**
+- The local Tauri database uses `SQLCipher` (AES-256-GCM).
+- The decryption key for the local DB is bound to OS-level secure storage (e.g., macOS Keychain, Windows Credential Manager).
 
-    %% Alice Wants to send a message
-    Alice Device->>Server (Mailroom): Request Bob's Keys
-    Server (Mailroom)-->>Alice Device: Returns Bob's Public Keys: [IK_B, SPK_B, Sig(SPK_B), OPK_B_1]
+### 3.4 Key Compromise & Forward Secrecy (TA4)
+**Attack:** TA4 extracts a user's long-term Identity Key.
+**Mitigation:**
+- Trustline uses the **Double Ratchet Algorithm**.
+- **Perfect Forward Secrecy (PFS):** Compromising a long-term key does not decrypt historical messages, as they were encrypted with ephemeral keys that have already been destroyed.
+- **Post-Compromise Security (PCS):** Once the user sends a new message (ratcheting the Diffie-Hellman state), the keys self-heal, locking TA4 out of future messages.
 
-    %% X3DH Key Agreement (Alice computes locally)
-    Note over Alice Device: Alice generates an Ephemeral Keypair (EK_A).
-    Note over Alice Device: Alice calculates 4 Diffie-Hellman (DH) exchanges: <br/> DH1 = DH(IK_A, SPK_B) <br/> DH2 = DH(EK_A, IK_B) <br/> DH3 = DH(EK_A, SPK_B) <br/> DH4 = DH(EK_A, OPK_B_1)
-    Note over Alice Device: Master Secret (SK) = HKDF(DH1 || DH2 || DH3 || DH4)
-    
-    %% Message Encryption
-    Note over Alice Device: Encrypts Payload with XChaCha20(SK) 
-    Alice Device->>Server (Mailroom): Sends Payload: [IK_A, EK_A, Ciphertext]
+---
 
-    %% Bob comes online and receives the message
-    Server (Mailroom)-->>Bob Device: Delivers Payload: [IK_A, EK_A, Ciphertext]
+## 4. Authentication Threats (Phishing)
 
-    %% Bob computes the same Master Secret
-    Note over Bob Device: Bob uses his Private Keys to calculate the same 4 DH exchanges: <br/> DH1 = DH(SPK_B_priv, IK_A) <br/> DH2 = DH(IK_B_priv, EK_A) <br/> DH3 = DH(SPK_B_priv, EK_A) <br/> DH4 = DH(OPK_B_1_priv, EK_A)
-    Note over Bob Device: Master Secret (SK) = HKDF(DH1 || DH2 || DH3 || DH4)
-    
-    %% Bob Decrypts
-    Note over Bob Device: Decrypts Ciphertext with XChaCha20(SK)
-    Note over Bob Device: Bob deletes OPK_B_1_priv. Forward Secrecy begins via Double Ratchet.
-```
+**Attack:** Attackers use social engineering to trick a user into handing over a password.
+**Mitigation:**
+- Trustline does not use passwords.
+- Authentication utilizes **WebAuthn / FIDO2**. Hardware tokens (YubiKey) or biometric enclaves cryptographically bind the credential to the physical origin domain (`https://app.trustline.in`). Phishing proxies are mathematically defeated.
 
-## 4. Why this Flow protects against our Threat Model
-1.  **Server Compromise:** The server only ever sees the public keys (`IK_B`, `SPK_B`) and the encrypted `Ciphertext`. It lacks the private keys required to calculate the Diffie-Hellman math to derive the `Master Secret (SK)`.
-2.  **Man-in-the-Middle (MitM):** Alice verifies Bob's `SPK_B` signature to ensure the server hasn't swapped Bob's keys for its own.
-3.  **Forward Secrecy:** Because Alice uses an Ephemeral Key (`EK_A`), and Bob deletes his One-Time Pre-Key (`OPK_B_1`) after reading, if Bob's phone is stolen a month later, the attacker cannot reverse-engineer the `Master Secret (SK)` to read this specific message.
+## 5. Metadata Leakage
+
+**Residual Risk:** While payloads are zero-knowledge, the server *must* route messages. Therefore, the server observes metadata: "Alice talked to Bob at 10:00 AM."
+**Current Mitigation:** 
+- Metadata retention is ephemeral. Delivered messages can be configured to hard-delete from PostgreSQL immediately upon client receipt acknowledgment.
+- NATS queues are strictly in-memory or aggressively pruned.
+
+---
+*End of Threat Model*
