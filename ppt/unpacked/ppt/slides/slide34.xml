@@ -1,0 +1,124 @@
+<?xml version="1.0" ?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld>
+    <p:spTree>
+      <p:nvGrpSpPr>
+        <p:cNvPr id="1" name=""/>
+        <p:cNvGrpSpPr/>
+        <p:nvPr/>
+      </p:nvGrpSpPr>
+      <p:grpSpPr>
+        <a:xfrm>
+          <a:off x="0" y="0"/>
+          <a:ext cx="0" cy="0"/>
+          <a:chOff x="0" y="0"/>
+          <a:chExt cx="0" cy="0"/>
+        </a:xfrm>
+      </p:grpSpPr>
+      <p:sp>
+        <p:nvSpPr>
+          <p:cNvPr id="2" name="object 2"/>
+          <p:cNvSpPr txBox="1"/>
+          <p:nvPr/>
+        </p:nvSpPr>
+        <p:spPr>
+          <a:xfrm>
+            <a:off x="4740318" y="4340981"/>
+            <a:ext cx="2715260" cy="1304925"/>
+          </a:xfrm>
+          <a:prstGeom prst="rect">
+            <a:avLst/>
+          </a:prstGeom>
+        </p:spPr>
+        <p:txBody>
+          <a:bodyPr vert="horz" wrap="square" lIns="0" tIns="70485" rIns="0" bIns="0" rtlCol="0">
+            <a:spAutoFit/>
+          </a:bodyPr>
+          <a:lstStyle/>
+          <a:p>
+            <a:pPr algn="ctr">
+              <a:lnSpc>
+                <a:spcPct val="100000"/>
+              </a:lnSpc>
+              <a:spcBef>
+                <a:spcPts val="555"/>
+              </a:spcBef>
+            </a:pPr>
+            <a:r>
+              <a:rPr sz="3600" b="1" spc="-5" dirty="0">
+                
+                <a:latin typeface="Bookman Uralic"/>
+                <a:cs typeface="Bookman Uralic"/>
+              <a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr>
+              <a:t>&amp;</a:t>
+            </a:r>
+            <a:endParaRPr sz="3600">
+              <a:latin typeface="Bookman Uralic"/>
+              <a:cs typeface="Bookman Uralic"/>
+            <a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:endParaRPr>
+          </a:p>
+          <a:p>
+            <a:pPr algn="ctr">
+              <a:lnSpc>
+                <a:spcPct val="100000"/>
+              </a:lnSpc>
+              <a:spcBef>
+                <a:spcPts val="500"/>
+              </a:spcBef>
+            </a:pPr>
+            <a:r>
+              <a:rPr sz="4000" b="1" spc="-5" dirty="0">
+                
+                <a:latin typeface="Bookman Uralic"/>
+                <a:cs typeface="Bookman Uralic"/>
+              <a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr>
+              <a:t>Queries</a:t>
+            </a:r>
+            <a:endParaRPr sz="4000">
+              <a:latin typeface="Bookman Uralic"/>
+              <a:cs typeface="Bookman Uralic"/>
+            <a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:endParaRPr>
+          </a:p>
+        </p:txBody>
+      </p:sp>
+      <p:sp>
+        <p:nvSpPr>
+          <p:cNvPr id="6" name="object 6"/>
+          <p:cNvSpPr/>
+          <p:nvPr/>
+        </p:nvSpPr>
+        <p:spPr>
+          <a:xfrm>
+            <a:off x="556768" y="70103"/>
+            <a:ext cx="11269472" cy="1331976"/>
+          </a:xfrm>
+          <a:prstGeom prst="rect">
+            <a:avLst/>
+          </a:prstGeom>
+          <a:blipFill>
+            <a:blip r:embed="rId2" cstate="print"/>
+            <a:stretch>
+              <a:fillRect/>
+            </a:stretch>
+          </a:blipFill>
+        </p:spPr>
+        <p:txBody>
+          <a:bodyPr wrap="square" lIns="0" tIns="0" rIns="0" bIns="0" rtlCol="0"/>
+          <a:lstStyle/>
+          <a:p>
+            <a:endParaRPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:endParaRPr>
+          </a:p>
+        </p:txBody>
+      </p:sp>
+    </p:spTree>
+  </p:cSld>
+  <p:clrMapOvr>
+    <a:masterClrMapping/>
+  </p:clrMapOvr>
+  <p:timing>
+    <p:tnLst>
+      <p:par>
+        <p:cTn id="1" dur="indefinite" restart="never" nodeType="tmRoot"/>
+      </p:par>
+    </p:tnLst>
+  </p:timing>
+</p:sld>

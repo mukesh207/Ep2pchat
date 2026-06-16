@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">
+  <Template/>
+  <TotalTime>15309</TotalTime>
+  <Words>173</Words>
+  <Application>Microsoft Office PowerPoint</Application>
+  <PresentationFormat>Widescreen</PresentationFormat>
+  <Paragraphs>75</Paragraphs>
+  <Slides>33</Slides>
+  <Notes>0</Notes>
+  <HiddenSlides>0</HiddenSlides>
+  <MMClips>0</MMClips>
+  <ScaleCrop>false</ScaleCrop>
+  <HeadingPairs>
+    <vt:vector size="6" baseType="variant">
+      <vt:variant>
+        <vt:lpstr>Fonts Used</vt:lpstr>
+      </vt:variant>
+      <vt:variant>
+        <vt:i4>7</vt:i4>
+      </vt:variant>
+      <vt:variant>
+        <vt:lpstr>Theme</vt:lpstr>
+      </vt:variant>
+      <vt:variant>
+        <vt:i4>1</vt:i4>
+      </vt:variant>
+      <vt:variant>
+        <vt:lpstr>Slide Titles</vt:lpstr>
+      </vt:variant>
+      <vt:variant>
+        <vt:i4>33</vt:i4>
+      </vt:variant>
+    </vt:vector>
+  </HeadingPairs>
+  <TitlesOfParts>
+    <vt:vector size="41" baseType="lpstr">
+      <vt:lpstr>Arial</vt:lpstr>
+      <vt:lpstr>Bookman Uralic</vt:lpstr>
+      <vt:lpstr>Calibri</vt:lpstr>
+      <vt:lpstr>Castellar</vt:lpstr>
+      <vt:lpstr>Times New Roman</vt:lpstr>
+      <vt:lpstr>Trebuchet MS</vt:lpstr>
+      <vt:lpstr>Wingdings</vt:lpstr>
+      <vt:lpstr>Theme1</vt:lpstr>
+      <vt:lpstr>DEPARTMENT OF COMPUTER SCIENCE  PROJECT - MODEL VIVA VOCE PRESENTATION</vt:lpstr>
+      <vt:lpstr>Abstract</vt:lpstr>
+      <vt:lpstr>Abstract (Cont..)</vt:lpstr>
+      <vt:lpstr>  Literature Survey</vt:lpstr>
+      <vt:lpstr>  Literature Survey (Cont..)</vt:lpstr>
+      <vt:lpstr>  Problem Statement</vt:lpstr>
+      <vt:lpstr>  Objectives of the Study</vt:lpstr>
+      <vt:lpstr>Proposed Overall Architecture Diagram </vt:lpstr>
+      <vt:lpstr> Module - 1 </vt:lpstr>
+      <vt:lpstr>Module – 1 contd..</vt:lpstr>
+      <vt:lpstr>  Module - 2</vt:lpstr>
+      <vt:lpstr>Module – 2 contd..</vt:lpstr>
+      <vt:lpstr>  Module - 3</vt:lpstr>
+      <vt:lpstr>Module – 3 contd..</vt:lpstr>
+      <vt:lpstr>  Module - 4</vt:lpstr>
+      <vt:lpstr>Module – 4 contd..</vt:lpstr>
+      <vt:lpstr>  Experimental Results  &amp;  Discussions </vt:lpstr>
+      <vt:lpstr>Hardware and Software Requirements</vt:lpstr>
+      <vt:lpstr>Dataset 1-Description — Kaggle Human Palm Images</vt:lpstr>
+      <vt:lpstr>Module 1 - Results</vt:lpstr>
+      <vt:lpstr>Module 1 – Results contd..</vt:lpstr>
+      <vt:lpstr>Module 2 - Results</vt:lpstr>
+      <vt:lpstr>Module 2 – Results contd..</vt:lpstr>
+      <vt:lpstr>Module 3 - Results</vt:lpstr>
+      <vt:lpstr>Module 3 – Results contd..</vt:lpstr>
+      <vt:lpstr>Module 4 - Results</vt:lpstr>
+      <vt:lpstr>Module 4 – Results contd..</vt:lpstr>
+      <vt:lpstr>Conclusion</vt:lpstr>
+      <vt:lpstr>Future Scope</vt:lpstr>
+      <vt:lpstr>References</vt:lpstr>
+      <vt:lpstr>References (Cont..)</vt:lpstr>
+      <vt:lpstr>List of Conference Papers - Presented</vt:lpstr>
+      <vt:lpstr>PowerPoint Presentation</vt:lpstr>
+    </vt:vector>
+  </TitlesOfParts>
+  <Company/>
+  <LinksUpToDate>false</LinksUpToDate>
+  <SharedDoc>false</SharedDoc>
+  <HyperlinksChanged>false</HyperlinksChanged>
+  <AppVersion>16.0000</AppVersion>
+</Properties>

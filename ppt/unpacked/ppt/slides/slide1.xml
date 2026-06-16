@@ -1,0 +1,205 @@
+<?xml version="1.0" ?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld>
+    <p:spTree>
+      <p:nvGrpSpPr>
+        <p:cNvPr id="1" name=""/>
+        <p:cNvGrpSpPr/>
+        <p:nvPr/>
+      </p:nvGrpSpPr>
+      <p:grpSpPr>
+        <a:xfrm>
+          <a:off x="0" y="0"/>
+          <a:ext cx="0" cy="0"/>
+          <a:chOff x="0" y="0"/>
+          <a:chExt cx="0" cy="0"/>
+        </a:xfrm>
+      </p:grpSpPr>
+      <p:sp>
+        <p:nvSpPr>
+          <p:cNvPr id="2" name="object 2"/>
+          <p:cNvSpPr/>
+          <p:nvPr/>
+        </p:nvSpPr>
+        <p:spPr>
+          <a:xfrm>
+            <a:off x="0" y="0"/>
+            <a:ext cx="12192000" cy="6858000"/>
+          </a:xfrm>
+          <a:prstGeom prst="rect">
+            <a:avLst/>
+          </a:prstGeom>
+          <a:blipFill>
+            <a:blip r:embed="rId2" cstate="print"/>
+            <a:stretch>
+              <a:fillRect/>
+            </a:stretch>
+          </a:blipFill>
+        </p:spPr>
+        <p:txBody>
+          <a:bodyPr wrap="square" lIns="0" tIns="0" rIns="0" bIns="0" rtlCol="0"/>
+          <a:lstStyle/>
+          <a:p>
+            <a:endParaRPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:endParaRPr>
+          </a:p>
+        </p:txBody>
+      </p:sp>
+      <p:sp>
+        <p:nvSpPr>
+          <p:cNvPr id="3" name="object 3"/>
+          <p:cNvSpPr txBox="1">
+            <a:spLocks noGrp="1"/>
+          </p:cNvSpPr>
+          <p:nvPr>
+            <p:ph type="title" idx="4294967295"/>
+          </p:nvPr>
+        </p:nvSpPr>
+        <p:spPr>
+          <a:xfrm>
+            <a:off x="3486235" y="1397000"/>
+            <a:ext cx="5664200" cy="843821"/>
+          </a:xfrm>
+          <a:prstGeom prst="rect">
+            <a:avLst/>
+          </a:prstGeom>
+        </p:spPr>
+        <p:txBody>
+          <a:bodyPr vert="horz" wrap="square" lIns="0" tIns="12700" rIns="0" bIns="0" rtlCol="0">
+            <a:spAutoFit/>
+          </a:bodyPr>
+          <a:lstStyle/>
+          
+        <a:p><a:pPr algn="ctr"/><a:r><a:rPr lang="en-US" sz="3600" b="1"><a:latin typeface="Arial"/><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t>TRUSTLINE</a:t></a:r></a:p></p:txBody>
+      </p:sp>
+      <p:sp>
+        <p:nvSpPr>
+          <p:cNvPr id="4" name="object 4"/>
+          <p:cNvSpPr txBox="1"/>
+          <p:nvPr/>
+        </p:nvSpPr>
+        <p:spPr>
+          <a:xfrm>
+            <a:off x="1286595" y="2317298"/>
+            <a:ext cx="10063479" cy="3084819"/>
+          </a:xfrm>
+          <a:prstGeom prst="rect">
+            <a:avLst/>
+          </a:prstGeom>
+        </p:spPr>
+        <p:txBody>
+          <a:bodyPr vert="horz" wrap="square" lIns="0" tIns="12065" rIns="0" bIns="0" rtlCol="0">
+            <a:spAutoFit/>
+          </a:bodyPr>
+          <a:lstStyle/>
+          <a:p>
+            <a:pPr algn="ctr"/>
+            <a:endParaRPr lang="en-US" b="1" dirty="0" smtClean="0">
+              <a:latin typeface="Times New Roman" pitchFamily="18" charset="0"/>
+              <a:cs typeface="Times New Roman" pitchFamily="18" charset="0"/>
+            <a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:endParaRPr>
+          <a:r><a:rPr lang="en-US" sz="1800"><a:latin typeface="Arial"/><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t>A Self-Hosted End-to-End Encrypted Real-Time Collaboration Platform</a:t></a:r><a:br/><a:r><a:rPr lang="en-US" sz="1800"><a:latin typeface="Arial"/><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t>for Confidential Enterprise Workflows</a:t></a:r><a:br/><a:r><a:rPr lang="en-US" sz="1800"><a:latin typeface="Arial"/><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t/></a:r><a:br/><a:r><a:rPr lang="en-US" sz="1800"><a:latin typeface="Arial"/><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t>Presented By: Student 1, Student 2, Student 3</a:t></a:r><a:br/><a:r><a:rPr lang="en-US" sz="1800"><a:latin typeface="Arial"/><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t>Register Numbers: Reg No 1, Reg No 2, Reg No 3</a:t></a:r><a:br/><a:r><a:rPr lang="en-US" sz="1800"><a:latin typeface="Arial"/><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t>Department of Computer Science and Engineering</a:t></a:r><a:br/><a:r><a:rPr lang="en-US" sz="1800"><a:latin typeface="Arial"/><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t>Bharath Institute of Higher Education and Research (BIHER)</a:t></a:r><a:br/><a:r><a:rPr lang="en-US" sz="1800"><a:latin typeface="Arial"/><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t/></a:r><a:br/><a:r><a:rPr lang="en-US" sz="1800"><a:latin typeface="Arial"/><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t>Guided By: Guide Name, Assistant Professor</a:t></a:r></a:p>
+          
+          
+          
+          
+          
+          
+          
+          
+          
+          
+        </p:txBody>
+      </p:sp>
+      <p:sp>
+        <p:nvSpPr>
+          <p:cNvPr id="5" name="object 5"/>
+          <p:cNvSpPr/>
+          <p:nvPr/>
+        </p:nvSpPr>
+        <p:spPr>
+          <a:xfrm>
+            <a:off x="556768" y="39623"/>
+            <a:ext cx="11269472" cy="1331976"/>
+          </a:xfrm>
+          <a:prstGeom prst="rect">
+            <a:avLst/>
+          </a:prstGeom>
+          <a:blipFill>
+            <a:blip r:embed="rId3" cstate="print"/>
+            <a:stretch>
+              <a:fillRect/>
+            </a:stretch>
+          </a:blipFill>
+        </p:spPr>
+        <p:txBody>
+          <a:bodyPr wrap="square" lIns="0" tIns="0" rIns="0" bIns="0" rtlCol="0"/>
+          <a:lstStyle/>
+          <a:p>
+            <a:endParaRPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:endParaRPr>
+          </a:p>
+        </p:txBody>
+      </p:sp>
+      <p:sp>
+        <p:nvSpPr>
+          <p:cNvPr id="7" name="object 7"/>
+          <p:cNvSpPr/>
+          <p:nvPr/>
+        </p:nvSpPr>
+        <p:spPr>
+          <a:xfrm>
+            <a:off x="0" y="1"/>
+            <a:ext cx="12192000" cy="6844665"/>
+          </a:xfrm>
+          <a:custGeom>
+            <a:avLst/>
+            <a:gdLst/>
+            <a:ahLst/>
+            <a:cxnLst/>
+            <a:rect l="l" t="t" r="r" b="b"/>
+            <a:pathLst>
+              <a:path w="9144000" h="6844665">
+                <a:moveTo>
+                  <a:pt x="0" y="6844283"/>
+                </a:moveTo>
+                <a:lnTo>
+                  <a:pt x="9144000" y="6844283"/>
+                </a:lnTo>
+                <a:lnTo>
+                  <a:pt x="9144000" y="0"/>
+                </a:lnTo>
+                <a:lnTo>
+                  <a:pt x="0" y="0"/>
+                </a:lnTo>
+                <a:lnTo>
+                  <a:pt x="0" y="6844283"/>
+                </a:lnTo>
+                <a:close/>
+              </a:path>
+            </a:pathLst>
+          </a:custGeom>
+          <a:ln w="76200">
+            <a:solidFill>
+              <a:srgbClr val="FFFFFF"/>
+            </a:solidFill>
+          </a:ln>
+        </p:spPr>
+        <p:txBody>
+          <a:bodyPr wrap="square" lIns="0" tIns="0" rIns="0" bIns="0" rtlCol="0"/>
+          <a:lstStyle/>
+          <a:p>
+            <a:endParaRPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:endParaRPr>
+          </a:p>
+        </p:txBody>
+      </p:sp>
+    </p:spTree>
+  </p:cSld>
+  <p:clrMapOvr>
+    <a:masterClrMapping/>
+  </p:clrMapOvr>
+  <p:timing>
+    <p:tnLst>
+      <p:par>
+        <p:cTn id="1" dur="indefinite" restart="never" nodeType="tmRoot"/>
+      </p:par>
+    </p:tnLst>
+  </p:timing>
+</p:sld>
